@@ -1,0 +1,12 @@
+{
+  "name": "patycord",
+  "version": "0.1.0",
+  "description": "Barebones P2P voice chat for friends. No server hosting required.",
+  "scripts": {
+    "start": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  }
+}
