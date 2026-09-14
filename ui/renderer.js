@@ -6,18 +6,23 @@ const callBtn = document.getElementById('callBtn');
 const peerListEl = document.getElementById('peerList');
 const peerCountEl = document.getElementById('peerCount');
 const muteBtn = document.getElementById('muteBtn');
+const shareScreenBtn = document.getElementById('shareScreenBtn');
 const retryMicBtn = document.getElementById('retryMicBtn');
 const statusEl = document.getElementById('status');
 const incomingCallsEl = document.getElementById('incomingCalls');
 const toastsEl = document.getElementById('toasts');
+const screenGridEl = document.getElementById('screenGrid');
 
 let localStream = null;
 let muted = false;
 let peer = null;
+let screenStream = null;
 const calls = new Map(); // peerId -> { call, audioEl }
 const dataConnections = new Map(); // peerId -> DataConnection, for peers who joined *through* us
 const presence = new Map(); // peerId -> boolean, from lightweight background probes
 const pendingCalls = new Map(); // peerId -> MediaConnection, awaiting Accept/Decline
+const outgoingScreenCalls = new Map(); // peerId -> MediaConnection, us sharing our screen to them
+const screenTiles = new Map(); // peerId -> { call, tileEl }, someone else's screen we're viewing
 
 // --- persistent identity & friends list -------------------------------
 
@@ -136,6 +141,10 @@ function hangUp(peerId) {
   const entry = calls.get(peerId);
   if (entry && entry.call) entry.call.close();
   removeCall(peerId);
+  // Hanging up on someone also ends any screen sharing between you and them.
+  const outgoingScreen = outgoingScreenCalls.get(peerId);
+  if (outgoingScreen) { outgoingScreen.close(); outgoingScreenCalls.delete(peerId); }
+  removeScreenTile(peerId);
 }
 
 function removeCall(peerId) {
@@ -266,6 +275,80 @@ function renderIncomingCalls() {
   }
 }
 
+// --- screen sharing --------------------------------------------------
+
+function addScreenTile(peerId, call) {
+  removeScreenTile(peerId); // replace any existing tile from them
+
+  const tile = document.createElement('div');
+  tile.className = 'screenTile';
+  const video = document.createElement('video');
+  video.autoplay = true;
+  video.playsInline = true;
+  video.muted = true; // no audio track on this call anyway
+  const label = document.createElement('div');
+  label.className = 'label';
+  label.textContent = `${friendName(peerId)}'s screen`;
+  tile.appendChild(video);
+  tile.appendChild(label);
+  screenGridEl.appendChild(tile);
+  screenTiles.set(peerId, { call, tileEl: tile });
+
+  call.on('stream', (stream) => { video.srcObject = stream; });
+  call.on('close', () => removeScreenTile(peerId));
+  call.on('error', () => removeScreenTile(peerId));
+}
+
+function removeScreenTile(peerId) {
+  const entry = screenTiles.get(peerId);
+  if (!entry) return;
+  entry.tileEl.remove();
+  screenTiles.delete(peerId);
+}
+
+// Only accept a screen share from someone we're already voice-connected to — an
+// unsolicited video call from a stranger just gets dropped, no prompt needed since
+// the trust boundary is "already in a call with them".
+function handleIncomingScreenShare(call) {
+  if (!calls.has(call.peer)) { call.close(); return; }
+  call.answer();
+  addScreenTile(call.peer, call);
+  toast(`${friendName(call.peer)} started sharing their screen`, 'info');
+}
+
+async function startScreenShare() {
+  try {
+    screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+  } catch (err) {
+    toast(`Screen share failed: ${err.message}`);
+    return;
+  }
+  screenStream.getVideoTracks()[0].addEventListener('ended', stopScreenShare);
+
+  for (const id of calls.keys()) {
+    const call = peer.call(id, screenStream, { metadata: { type: 'screen' } });
+    outgoingScreenCalls.set(id, call);
+    call.on('close', () => outgoingScreenCalls.delete(id));
+    call.on('error', () => outgoingScreenCalls.delete(id));
+  }
+
+  shareScreenBtn.textContent = 'Stop sharing';
+  shareScreenBtn.classList.add('sharing');
+  log('sharing your screen');
+}
+
+function stopScreenShare() {
+  if (screenStream) {
+    screenStream.getTracks().forEach((t) => t.stop());
+    screenStream = null;
+  }
+  for (const call of outgoingScreenCalls.values()) call.close();
+  outgoingScreenCalls.clear();
+  shareScreenBtn.textContent = 'Share screen';
+  shareScreenBtn.classList.remove('sharing');
+  log('stopped sharing your screen');
+}
+
 async function requestMic() {
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
@@ -292,6 +375,10 @@ async function main() {
   });
 
   peer.on('call', (call) => {
+    if (call.metadata?.type === 'screen') {
+      handleIncomingScreenShare(call);
+      return;
+    }
     pendingCalls.set(call.peer, call);
     renderIncomingCalls();
     log(`incoming call from ${friendName(call.peer)}`);
@@ -352,6 +439,11 @@ muteBtn.addEventListener('click', () => {
   localStream.getAudioTracks().forEach((t) => (t.enabled = !muted));
   muteBtn.textContent = muted ? 'Unmute' : 'Mute';
   muteBtn.classList.toggle('muted', muted);
+});
+
+shareScreenBtn.addEventListener('click', () => {
+  if (screenStream) stopScreenShare();
+  else startScreenShare();
 });
 
 saveFriends(loadFriends()); // persist the cleanup of any bad entries from past bugs
