@@ -8,12 +8,15 @@ const peerCountEl = document.getElementById('peerCount');
 const muteBtn = document.getElementById('muteBtn');
 const retryMicBtn = document.getElementById('retryMicBtn');
 const statusEl = document.getElementById('status');
+const incomingCallsEl = document.getElementById('incomingCalls');
 
 let localStream = null;
 let muted = false;
 let peer = null;
 const calls = new Map(); // peerId -> { call, audioEl }
 const dataConnections = new Map(); // peerId -> DataConnection, for peers who joined *through* us
+const presence = new Map(); // peerId -> boolean, from lightweight background probes
+const pendingCalls = new Map(); // peerId -> MediaConnection, awaiting Accept/Decline
 
 // --- persistent identity & friends list -------------------------------
 
@@ -74,12 +77,15 @@ function renderPeerList() {
 
   for (const friend of friends) {
     const inCall = calls.has(friend.id);
+    const connected = !!calls.get(friend.id)?.audioEl; // stream actually flowing, not just dialing
+    const isOnline = connected || presence.get(friend.id);
     const li = document.createElement('li');
+    const buttonLabel = inCall ? (connected ? 'Hang up' : 'Cancel') : 'Call';
     li.innerHTML = `
-      <span class="status"><span class="dot ${inCall ? 'online' : ''}"></span>
+      <span class="status"><span class="dot ${isOnline ? 'online' : ''}"></span>
         <span class="name">${friend.name}</span> <span class="id">${friend.id}</span></span>
       <span class="status">
-        <button class="callToggleBtn secondary" data-id="${friend.id}">${inCall ? 'Hang up' : 'Call'}</button>
+        <button class="callToggleBtn secondary" data-id="${friend.id}">${buttonLabel}</button>
         <button class="removeBtn" data-id="${friend.id}" title="Remove">×</button>
       </span>`;
     li.querySelector('.callToggleBtn').addEventListener('click', () => {
@@ -145,6 +151,15 @@ function meshCall(id) {
   if (!peer || id === peer.id || calls.has(id)) return;
   const call = peer.call(id, localStream);
   wireCall(call);
+
+  // If they're offline (or never accept), the call just hangs — give up after a while
+  // instead of leaving a permanently "connecting" entry.
+  setTimeout(() => {
+    if (!calls.get(id)?.audioEl) {
+      presence.set(id, false);
+      hangUp(id);
+    }
+  }, 15000);
 }
 
 // Ask `id` (our entry point into a call) who else is already there, then call everyone
@@ -186,6 +201,58 @@ function handleDataMessage(msg) {
   }
 }
 
+// A silent, no-audio connection attempt just to check whether a friend's app is
+// currently open — doesn't ring anything on their end.
+function probePresence(id) {
+  if (!peer || calls.has(id)) return;
+  let settled = false;
+  const probe = peer.connect(id, { reliable: false });
+  const finish = (online) => {
+    if (settled) return;
+    settled = true;
+    presence.set(id, online);
+    renderPeerList();
+    try { probe.close(); } catch {}
+  };
+  const timer = setTimeout(() => finish(false), 4000);
+  probe.on('open', () => { clearTimeout(timer); finish(true); });
+  probe.on('error', () => { clearTimeout(timer); finish(false); });
+}
+
+function probeAllFriends() {
+  for (const friend of loadFriends()) probePresence(friend.id);
+}
+
+function friendName(id) {
+  return loadFriends().find((f) => f.id === id)?.name || id;
+}
+
+function renderIncomingCalls() {
+  incomingCallsEl.innerHTML = '';
+  for (const [id, call] of pendingCalls) {
+    const div = document.createElement('div');
+    div.className = 'incomingCall';
+    div.innerHTML = `
+      <span>Incoming call from <strong>${friendName(id)}</strong></span>
+      <span class="status">
+        <button class="acceptBtn">Accept</button>
+        <button class="declineBtn">Decline</button>
+      </span>`;
+    div.querySelector('.acceptBtn').addEventListener('click', () => {
+      pendingCalls.delete(id);
+      call.answer(localStream);
+      wireCall(call);
+      renderIncomingCalls();
+    });
+    div.querySelector('.declineBtn').addEventListener('click', () => {
+      pendingCalls.delete(id);
+      call.close();
+      renderIncomingCalls();
+    });
+    incomingCallsEl.appendChild(div);
+  }
+}
+
 async function requestMic() {
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
@@ -207,17 +274,32 @@ async function main() {
     myIdEl.textContent = id;
     log('ready — press Call next to a friend to connect');
     renderPeerList();
+    probeAllFriends();
+    setInterval(probeAllFriends, 10000);
   });
 
   peer.on('call', (call) => {
-    call.answer(localStream);
-    wireCall(call);
-    log(`incoming call from ${call.peer}`);
+    pendingCalls.set(call.peer, call);
+    renderIncomingCalls();
+    log(`incoming call from ${friendName(call.peer)}`);
+    call.on('close', () => { pendingCalls.delete(call.peer); renderIncomingCalls(); });
   });
 
   peer.on('connection', (conn) => handleIncomingDataConnection(conn));
 
-  peer.on('error', (err) => log(`peer error: ${err}`));
+  peer.on('error', (err) => {
+    log(`peer error: ${err}`);
+    // "Could not connect to peer <id>" from the broker means they're not online right
+    // now — clean up the dialing state immediately instead of waiting for the timeout.
+    if (err.type === 'peer-unavailable') {
+      const match = /peer\s+([^\s.]+)/.exec(err.message || '');
+      const id = match?.[1];
+      if (id && calls.has(id) && !calls.get(id).audioEl) {
+        presence.set(id, false);
+        hangUp(id);
+      }
+    }
+  });
   peer.on('disconnected', () => log('lost connection to signaling broker, reconnecting…'));
 
   callBtn.addEventListener('click', () => {

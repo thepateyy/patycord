@@ -48,10 +48,20 @@
   #status { font-size: 12px; color: #949ba4; margin-top: 8px; white-space: pre-wrap; }
   #muteBtn.muted { background: #da373c; }
   .empty { color: #6d6f78; font-size: 12px; padding: 4px 0; }
+  .incomingCall {
+    background: #3a3d5c; border: 1px solid #5865f2; border-radius: 6px;
+    padding: 10px 12px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;
+  }
+  .acceptBtn { background: #23a55a; }
+  .acceptBtn:hover { background: #1a7d44; }
+  .declineBtn { background: #da373c; }
+  .declineBtn:hover { background: #a52b2f; }
 </style>
 </head>
 <body>
   <h1>patycord</h1>
+
+  <div id="incomingCalls"></div>
 
   <div class="box">
     <label>Your ID (share this to let others join you)</label>
@@ -71,7 +81,7 @@
   </div>
 
   <div class="box">
-    <label>Friends (<span id="peerCount">0</span> online)</label>
+    <label>Friends (<span id="peerCount">0</span> in call)</label>
     <ul id="peerList"></ul>
   </div>
 
