@@ -73,12 +73,19 @@ function renderPeerList() {
   }
 
   for (const friend of friends) {
-    const online = calls.has(friend.id);
+    const inCall = calls.has(friend.id);
     const li = document.createElement('li');
     li.innerHTML = `
-      <span class="status"><span class="dot ${online ? 'online' : ''}"></span>
+      <span class="status"><span class="dot ${inCall ? 'online' : ''}"></span>
         <span class="name">${friend.name}</span> <span class="id">${friend.id}</span></span>
-      <button class="removeBtn" data-id="${friend.id}" title="Remove">×</button>`;
+      <span class="status">
+        <button class="callToggleBtn secondary" data-id="${friend.id}">${inCall ? 'Hang up' : 'Call'}</button>
+        <button class="removeBtn" data-id="${friend.id}" title="Remove">×</button>
+      </span>`;
+    li.querySelector('.callToggleBtn').addEventListener('click', () => {
+      if (calls.has(friend.id)) hangUp(friend.id);
+      else connectTo(friend.id);
+    });
     li.querySelector('.removeBtn').addEventListener('click', () => removeFriend(friend.id));
     peerListEl.appendChild(li);
   }
@@ -104,6 +111,12 @@ function attachRemoteStream(peerId, stream) {
   entry.audioEl = audio;
   calls.set(peerId, entry);
   renderPeerList();
+}
+
+function hangUp(peerId) {
+  const entry = calls.get(peerId);
+  if (entry && entry.call) entry.call.close();
+  removeCall(peerId);
 }
 
 function removeCall(peerId) {
@@ -173,10 +186,6 @@ function handleDataMessage(msg) {
   }
 }
 
-function connectToAllFriends() {
-  for (const friend of loadFriends()) connectTo(friend.id);
-}
-
 async function requestMic() {
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
@@ -196,8 +205,7 @@ async function main() {
 
   peer.on('open', (id) => {
     myIdEl.textContent = id;
-    log('ready — connecting to saved friends who are online…');
-    connectToAllFriends();
+    log('ready — press Call next to a friend to connect');
     renderPeerList();
   });
 
@@ -217,18 +225,14 @@ async function main() {
     const id = peerIdInput.value.trim();
     if (!id || id === peer.id) return;
     addFriend(name, id);
-    connectTo(id);
     friendNameInput.value = '';
     peerIdInput.value = '';
-    log(`added ${name} — connecting…`);
+    log(`added ${name} — press Call to connect`);
   });
 
   peerIdInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') callBtn.click();
   });
-
-  // Friends who were offline when we launched might come online later — keep trying.
-  setInterval(connectToAllFriends, 15000);
 }
 
 copyBtn.addEventListener('click', () => {
