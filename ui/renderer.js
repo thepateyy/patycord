@@ -24,6 +24,14 @@ const pendingCalls = new Map(); // peerId -> MediaConnection, awaiting Accept/De
 const outgoingScreenCalls = new Map(); // peerId -> MediaConnection, us sharing our screen to them
 const screenTiles = new Map(); // peerId -> { call, tileEl }, someone else's screen we're viewing
 
+// Peer IDs and call metadata come from whoever is calling us — including strangers,
+// not just saved friends — so they must never go into innerHTML unescaped.
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = String(str);
+  return div.innerHTML;
+}
+
 // --- persistent identity & friends list -------------------------------
 
 function getMyPersistentId() {
@@ -101,10 +109,10 @@ function renderPeerList() {
     const buttonLabel = inCall ? (connected ? 'Hang up' : 'Cancel') : 'Call';
     li.innerHTML = `
       <span class="status"><span class="dot ${isOnline ? 'online' : ''}"></span>
-        <span class="name">${friend.name}</span> <span class="id">${friend.id}</span></span>
+        <span class="name">${escapeHtml(friend.name)}</span> <span class="id">${escapeHtml(friend.id)}</span></span>
       <span class="status">
-        <button class="callToggleBtn secondary" data-id="${friend.id}">${buttonLabel}</button>
-        <button class="removeBtn" data-id="${friend.id}" title="Remove">×</button>
+        <button class="callToggleBtn secondary">${buttonLabel}</button>
+        <button class="removeBtn" title="Remove">×</button>
       </span>`;
     li.querySelector('.callToggleBtn').addEventListener('click', () => {
       if (calls.has(friend.id)) hangUp(friend.id);
@@ -120,7 +128,7 @@ function renderPeerList() {
     if (friendIds.has(id)) continue;
     const li = document.createElement('li');
     li.innerHTML = `<span class="status"><span class="dot online"></span>
-      <span class="id">${id}</span> (not saved)</span>`;
+      <span class="id">${escapeHtml(id)}</span> (not saved)</span>`;
     peerListEl.appendChild(li);
   }
 
@@ -255,7 +263,7 @@ function renderIncomingCalls() {
     const div = document.createElement('div');
     div.className = 'incomingCall';
     div.innerHTML = `
-      <span>Incoming call from <strong>${friendName(id)}</strong></span>
+      <span>Incoming call from <strong>${escapeHtml(friendName(id))}</strong></span>
       <span class="status">
         <button class="acceptBtn">Accept</button>
         <button class="declineBtn">Decline</button>
