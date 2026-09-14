@@ -10,7 +10,9 @@ const statusEl = document.getElementById('status');
 
 let localStream = null;
 let muted = false;
+let peer = null;
 const calls = new Map(); // peerId -> { call, audioEl }
+const dataConnections = new Map(); // peerId -> DataConnection, for peers who joined *through* us
 
 function log(msg) {
   statusEl.textContent = `[${new Date().toLocaleTimeString()}] ${msg}\n` + statusEl.textContent;
@@ -57,6 +59,40 @@ function wireCall(call) {
   call.on('error', (err) => { log(`call error (${call.peer}): ${err}`); removeCall(call.peer); });
 }
 
+// Connect audio to a peer we've just learned about, unless we're already connected to them.
+function meshCall(id) {
+  if (id === peer.id || calls.has(id)) return;
+  const call = peer.call(id, localStream);
+  wireCall(call);
+  log(`connecting to ${id}…`);
+}
+
+// Anyone can act as a discovery hub for whoever joins through their ID: when a new
+// peer connects to us, we hand them the list of everyone already in the call (our
+// current `calls`), and they take it from there — calling each one directly. Existing
+// peers don't need to act on this; they'll just receive an incoming call from the
+// new joiner and auto-answer, same as any other call.
+function handleIncomingDataConnection(conn) {
+  conn.on('open', () => {
+    const roster = [...calls.keys()].filter((id) => id !== conn.peer);
+    conn.send({ type: 'roster', peers: roster });
+    for (const [otherId, otherConn] of dataConnections) {
+      if (otherId !== conn.peer) otherConn.send({ type: 'peer-joined', id: conn.peer });
+    }
+    dataConnections.set(conn.peer, conn);
+  });
+  conn.on('data', (msg) => handleDataMessage(msg));
+  conn.on('close', () => dataConnections.delete(conn.peer));
+}
+
+function handleDataMessage(msg) {
+  if (msg.type === 'roster') {
+    for (const id of msg.peers) meshCall(id);
+  } else if (msg.type === 'peer-joined') {
+    log(`${msg.id} is joining the call`);
+  }
+}
+
 async function requestMic() {
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
@@ -71,11 +107,11 @@ async function requestMic() {
 async function main() {
   if (!(await requestMic())) return;
 
-  const peer = new Peer(); // uses PeerJS's free public cloud broker for signaling only
+  peer = new Peer(); // uses PeerJS's free public cloud broker for signaling only
 
   peer.on('open', (id) => {
     myIdEl.textContent = id;
-    log('ready — share your ID with a friend');
+    log('ready — share your ID, or join someone else\'s call with theirs');
   });
 
   peer.on('call', (call) => {
@@ -84,17 +120,23 @@ async function main() {
     log(`incoming call from ${call.peer}`);
   });
 
+  peer.on('connection', (conn) => handleIncomingDataConnection(conn));
+
   peer.on('error', (err) => log(`peer error: ${err}`));
   peer.on('disconnected', () => log('lost connection to signaling broker, reconnecting…'));
 
   callBtn.addEventListener('click', () => {
     const id = peerIdInput.value.trim();
-    if (!id) return;
+    if (!id || id === peer.id) return;
     if (calls.has(id)) { log('already connected to that peer'); return; }
-    const call = peer.call(id, localStream);
-    wireCall(call);
+
+    // Ask them (as our entry point into the call) who else is already in it.
+    const conn = peer.connect(id);
+    conn.on('data', (msg) => handleDataMessage(msg));
+    dataConnections.set(id, conn);
+
+    meshCall(id);
     peerIdInput.value = '';
-    log(`calling ${id}…`);
   });
 
   peerIdInput.addEventListener('keydown', (e) => {
