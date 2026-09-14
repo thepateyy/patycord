@@ -9,6 +9,7 @@ const muteBtn = document.getElementById('muteBtn');
 const retryMicBtn = document.getElementById('retryMicBtn');
 const statusEl = document.getElementById('status');
 const incomingCallsEl = document.getElementById('incomingCalls');
+const toastsEl = document.getElementById('toasts');
 
 let localStream = null;
 let muted = false;
@@ -31,7 +32,9 @@ function getMyPersistentId() {
 
 function loadFriends() {
   try {
-    return JSON.parse(localStorage.getItem('patycord.friends') || '[]');
+    const friends = JSON.parse(localStorage.getItem('patycord.friends') || '[]');
+    // Defensively drop any bad entries a past bug might have saved (empty id, etc).
+    return friends.filter((f) => f && typeof f.id === 'string' && f.id.trim());
   } catch {
     return [];
   }
@@ -62,6 +65,16 @@ function removeFriend(id) {
 
 function log(msg) {
   statusEl.textContent = `[${new Date().toLocaleTimeString()}] ${msg}\n` + statusEl.textContent;
+}
+
+// Errors people actually need to notice — brief on-screen banner, not just the log.
+function toast(msg, type = 'error') {
+  log(msg);
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  toastsEl.appendChild(el);
+  setTimeout(() => el.remove(), 5000);
 }
 
 function renderPeerList() {
@@ -143,7 +156,7 @@ function wireCall(call) {
 
   call.on('stream', (remoteStream) => attachRemoteStream(call.peer, remoteStream));
   call.on('close', () => removeCall(call.peer));
-  call.on('error', (err) => { log(`call error (${call.peer}): ${err}`); removeCall(call.peer); });
+  call.on('error', (err) => { toast(`Call with ${friendName(call.peer)} failed: ${err}`); removeCall(call.peer); });
 }
 
 // Connect audio to a peer we've just learned about, unless we're already connected to them.
@@ -204,7 +217,7 @@ function handleDataMessage(msg) {
 // A silent, no-audio connection attempt just to check whether a friend's app is
 // currently open — doesn't ring anything on their end.
 function probePresence(id) {
-  if (!peer || calls.has(id)) return;
+  if (!peer || !id || calls.has(id)) return;
   let settled = false;
   const probe = peer.connect(id, { reliable: false });
   const finish = (online) => {
@@ -258,7 +271,7 @@ async function requestMic() {
     localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     return true;
   } catch (err) {
-    log(`microphone access failed: ${err.message} — click "Retry mic access" and allow the prompt`);
+    toast(`Microphone access failed: ${err.message} — click "Retry mic access" and allow the prompt`);
     myIdEl.textContent = 'mic access needed';
     return false;
   }
@@ -288,19 +301,24 @@ async function main() {
   peer.on('connection', (conn) => handleIncomingDataConnection(conn));
 
   peer.on('error', (err) => {
-    log(`peer error: ${err}`);
     // "Could not connect to peer <id>" from the broker means they're not online right
-    // now — clean up the dialing state immediately instead of waiting for the timeout.
+    // now — clean up the dialing state immediately instead of waiting for the timeout,
+    // and show a plain-English toast instead of the raw broker error.
     if (err.type === 'peer-unavailable') {
-      const match = /peer\s+([^\s.]+)/.exec(err.message || '');
+      const match = /peer\s+(\S+)/.exec(err.message || '');
       const id = match?.[1];
       if (id && calls.has(id) && !calls.get(id).audioEl) {
         presence.set(id, false);
         hangUp(id);
+        toast(`${friendName(id)} isn't online right now.`);
+      } else {
+        log(`peer error: ${err}`);
       }
+      return;
     }
+    toast(`Connection error: ${err.message || err}`);
   });
-  peer.on('disconnected', () => log('lost connection to signaling broker, reconnecting…'));
+  peer.on('disconnected', () => toast('Lost connection to the signaling server, reconnecting…', 'info'));
 
   callBtn.addEventListener('click', () => {
     const name = friendNameInput.value.trim() || 'friend';
@@ -336,5 +354,6 @@ muteBtn.addEventListener('click', () => {
   muteBtn.classList.toggle('muted', muted);
 });
 
+saveFriends(loadFriends()); // persist the cleanup of any bad entries from past bugs
 renderPeerList();
 main();

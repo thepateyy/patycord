@@ -56,11 +56,24 @@
   .acceptBtn:hover { background: #1a7d44; }
   .declineBtn { background: #da373c; }
   .declineBtn:hover { background: #a52b2f; }
+  #toasts {
+    position: fixed; top: 12px; right: 12px; left: 12px;
+    display: flex; flex-direction: column; gap: 6px; z-index: 100;
+  }
+  .toast {
+    background: #2b2d31; border-left: 3px solid #da373c; color: #fff;
+    border-radius: 4px; padding: 10px 12px; font-size: 13px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    animation: toast-in 0.15s ease-out;
+  }
+  .toast.info { border-left-color: #5865f2; }
+  @keyframes toast-in { from { opacity: 0; transform: translateY(-6px); } }
 </style>
 </head>
 <body>
   <h1>patycord</h1>
 
+  <div id="toasts"></div>
   <div id="incomingCalls"></div>
 
   <div class="box">
