@@ -1,5 +1,6 @@
 const myIdEl = document.getElementById('myId');
 const copyBtn = document.getElementById('copyBtn');
+const friendNameInput = document.getElementById('friendNameInput');
 const peerIdInput = document.getElementById('peerIdInput');
 const callBtn = document.getElementById('callBtn');
 const peerListEl = document.getElementById('peerList');
@@ -14,17 +15,84 @@ let peer = null;
 const calls = new Map(); // peerId -> { call, audioEl }
 const dataConnections = new Map(); // peerId -> DataConnection, for peers who joined *through* us
 
+// --- persistent identity & friends list -------------------------------
+
+function getMyPersistentId() {
+  let id = localStorage.getItem('patycord.myId');
+  if (!id) {
+    id = 'p-' + crypto.randomUUID();
+    localStorage.setItem('patycord.myId', id);
+  }
+  return id;
+}
+
+function loadFriends() {
+  try {
+    return JSON.parse(localStorage.getItem('patycord.friends') || '[]');
+  } catch {
+    return [];
+  }
+}
+
+function saveFriends(friends) {
+  localStorage.setItem('patycord.friends', JSON.stringify(friends));
+}
+
+function addFriend(name, id) {
+  const friends = loadFriends();
+  const existing = friends.find((f) => f.id === id);
+  if (existing) {
+    existing.name = name;
+  } else {
+    friends.push({ id, name });
+  }
+  saveFriends(friends);
+  renderPeerList();
+}
+
+function removeFriend(id) {
+  saveFriends(loadFriends().filter((f) => f.id !== id));
+  renderPeerList();
+}
+
+// --- UI ------------------------------------------------------------
+
 function log(msg) {
   statusEl.textContent = `[${new Date().toLocaleTimeString()}] ${msg}\n` + statusEl.textContent;
 }
 
 function renderPeerList() {
+  const friends = loadFriends();
   peerListEl.innerHTML = '';
-  for (const id of calls.keys()) {
+
+  if (friends.length === 0 && calls.size === 0) {
     const li = document.createElement('li');
-    li.innerHTML = `<span>${id}</span><span>🔊</span>`;
+    li.className = 'empty';
+    li.textContent = 'No friends added yet — add one above.';
     peerListEl.appendChild(li);
   }
+
+  for (const friend of friends) {
+    const online = calls.has(friend.id);
+    const li = document.createElement('li');
+    li.innerHTML = `
+      <span class="status"><span class="dot ${online ? 'online' : ''}"></span>
+        <span class="name">${friend.name}</span> <span class="id">${friend.id}</span></span>
+      <button class="removeBtn" data-id="${friend.id}" title="Remove">×</button>`;
+    li.querySelector('.removeBtn').addEventListener('click', () => removeFriend(friend.id));
+    peerListEl.appendChild(li);
+  }
+
+  // Anyone connected who isn't a saved friend (e.g. joined via mesh discovery)
+  const friendIds = new Set(friends.map((f) => f.id));
+  for (const id of calls.keys()) {
+    if (friendIds.has(id)) continue;
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="status"><span class="dot online"></span>
+      <span class="id">${id}</span> (not saved)</span>`;
+    peerListEl.appendChild(li);
+  }
+
   peerCountEl.textContent = calls.size;
 }
 
@@ -61,10 +129,22 @@ function wireCall(call) {
 
 // Connect audio to a peer we've just learned about, unless we're already connected to them.
 function meshCall(id) {
-  if (id === peer.id || calls.has(id)) return;
+  if (!peer || id === peer.id || calls.has(id)) return;
   const call = peer.call(id, localStream);
   wireCall(call);
-  log(`connecting to ${id}…`);
+}
+
+// Ask `id` (our entry point into a call) who else is already there, then call everyone
+// they mention directly. Also works as a plain "call this ID" when nobody answers with a roster.
+function connectTo(id) {
+  if (!peer || id === peer.id || calls.has(id)) return;
+  if (!dataConnections.has(id)) {
+    const conn = peer.connect(id);
+    conn.on('data', (msg) => handleDataMessage(msg));
+    conn.on('error', () => {}); // connectivity errors surface via the call itself
+    dataConnections.set(id, conn);
+  }
+  meshCall(id);
 }
 
 // Anyone can act as a discovery hub for whoever joins through their ID: when a new
@@ -93,6 +173,10 @@ function handleDataMessage(msg) {
   }
 }
 
+function connectToAllFriends() {
+  for (const friend of loadFriends()) connectTo(friend.id);
+}
+
 async function requestMic() {
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
@@ -107,11 +191,14 @@ async function requestMic() {
 async function main() {
   if (!(await requestMic())) return;
 
-  peer = new Peer(); // uses PeerJS's free public cloud broker for signaling only
+  // A stable ID (saved locally) means friends you've added stay valid across restarts.
+  peer = new Peer(getMyPersistentId()); // uses PeerJS's free public cloud broker for signaling only
 
   peer.on('open', (id) => {
     myIdEl.textContent = id;
-    log('ready — share your ID, or join someone else\'s call with theirs');
+    log('ready — connecting to saved friends who are online…');
+    connectToAllFriends();
+    renderPeerList();
   });
 
   peer.on('call', (call) => {
@@ -126,22 +213,22 @@ async function main() {
   peer.on('disconnected', () => log('lost connection to signaling broker, reconnecting…'));
 
   callBtn.addEventListener('click', () => {
+    const name = friendNameInput.value.trim() || 'friend';
     const id = peerIdInput.value.trim();
     if (!id || id === peer.id) return;
-    if (calls.has(id)) { log('already connected to that peer'); return; }
-
-    // Ask them (as our entry point into the call) who else is already in it.
-    const conn = peer.connect(id);
-    conn.on('data', (msg) => handleDataMessage(msg));
-    dataConnections.set(id, conn);
-
-    meshCall(id);
+    addFriend(name, id);
+    connectTo(id);
+    friendNameInput.value = '';
     peerIdInput.value = '';
+    log(`added ${name} — connecting…`);
   });
 
   peerIdInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') callBtn.click();
   });
+
+  // Friends who were offline when we launched might come online later — keep trying.
+  setInterval(connectToAllFriends, 15000);
 }
 
 copyBtn.addEventListener('click', () => {
@@ -163,4 +250,5 @@ muteBtn.addEventListener('click', () => {
   muteBtn.classList.toggle('muted', muted);
 });
 
+renderPeerList();
 main();
