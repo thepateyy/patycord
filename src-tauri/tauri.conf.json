@@ -16,7 +16,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://unpkg.com https://*.peerjs.com wss://*.peerjs.com; media-src 'self'"
     }
   },
   "bundle": {
