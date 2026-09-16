@@ -21,7 +21,7 @@
   }
   label { font-size: 11px; text-transform: uppercase; color: #949ba4; display: block; margin-bottom: 4px; }
   .id-row { display: flex; gap: 6px; align-items: center; }
-  #myId { font-family: monospace; font-size: 13px; background: #1e1f22; padding: 6px 8px; border-radius: 4px; flex: 1; user-select: all; overflow-wrap: anywhere; }
+  #myId, #myName { font-family: monospace; font-size: 13px; background: #1e1f22; padding: 6px 8px; border-radius: 4px; flex: 1; user-select: all; overflow-wrap: anywhere; }
   button {
     background: #5865f2; color: #fff; border: none; border-radius: 4px;
     padding: 7px 12px; cursor: pointer; font-size: 13px;
@@ -79,6 +79,15 @@
     background: rgba(0,0,0,0.6); padding: 2px 6px; border-radius: 3px;
   }
   #shareScreenBtn.sharing { background: #da373c; }
+  #usernameModal[hidden] { display: none; }
+  #usernameModal {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    display: flex; align-items: center; justify-content: center; z-index: 200;
+  }
+  #usernameModal .box { width: min(280px, 90%); margin: 0; }
+  #usernameModal p { margin: 0 0 10px; font-size: 13px; color: #dcddde; }
+  .editNameBtn { background: transparent; color: #949ba4; padding: 2px 6px; font-size: 12px; }
+  .editNameBtn:hover { background: #4e5058; color: #fff; }
 </style>
 </head>
 <body>
@@ -87,6 +96,24 @@
   <div id="toasts"></div>
   <div id="incomingCalls"></div>
   <div id="screenGrid"></div>
+
+  <div id="usernameModal" hidden>
+    <div class="box">
+      <p>What should people see when you call them?</p>
+      <div class="connect-row">
+        <input type="text" id="usernameInput" placeholder="your name" maxlength="40">
+        <button id="usernameSaveBtn">Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="box">
+    <label>Your name</label>
+    <div class="id-row">
+      <div id="myName">—</div>
+      <button id="editNameBtn" class="secondary editNameBtn">Edit</button>
+    </div>
+  </div>
 
   <div class="box">
     <label>Your ID (share this to let others join you)</label>
@@ -99,7 +126,6 @@
   <div class="box">
     <label>Add a friend (one-time — swap IDs once, never again)</label>
     <div class="connect-row">
-      <input type="text" id="friendNameInput" placeholder="name" style="flex: 0 0 90px;">
       <input type="text" id="peerIdInput" placeholder="their ID">
       <button id="callBtn">Add</button>
     </div>

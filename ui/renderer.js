@@ -1,6 +1,10 @@
 const myIdEl = document.getElementById('myId');
+const myNameEl = document.getElementById('myName');
+const editNameBtn = document.getElementById('editNameBtn');
+const usernameModal = document.getElementById('usernameModal');
+const usernameInput = document.getElementById('usernameInput');
+const usernameSaveBtn = document.getElementById('usernameSaveBtn');
 const copyBtn = document.getElementById('copyBtn');
-const friendNameInput = document.getElementById('friendNameInput');
 const peerIdInput = document.getElementById('peerIdInput');
 const callBtn = document.getElementById('callBtn');
 const peerListEl = document.getElementById('peerList');
@@ -23,6 +27,7 @@ const presence = new Map(); // peerId -> boolean, from lightweight background pr
 const pendingCalls = new Map(); // peerId -> MediaConnection, awaiting Accept/Decline
 const outgoingScreenCalls = new Map(); // peerId -> MediaConnection, us sharing our screen to them
 const screenTiles = new Map(); // peerId -> { call, tileEl }, someone else's screen we're viewing
+const remoteNames = new Map(); // peerId -> name they told us about themselves, live
 
 // Peer IDs and call metadata come from whoever is calling us — including strangers,
 // not just saved friends — so they must never go into innerHTML unescaped.
@@ -43,6 +48,39 @@ function getMyPersistentId() {
   return id;
 }
 
+function getMyUsername() {
+  return localStorage.getItem('patycord.myUsername') || '';
+}
+
+function setMyUsername(name) {
+  localStorage.setItem('patycord.myUsername', name);
+  myNameEl.textContent = name;
+}
+
+// Blocks until the user has set a username — shown once on first launch, and
+// again any time they click Edit.
+function promptForUsername() {
+  return new Promise((resolve) => {
+    usernameInput.value = getMyUsername();
+    usernameModal.hidden = false;
+    usernameInput.focus();
+
+    const submit = () => {
+      const name = usernameInput.value.trim();
+      if (!name) return;
+      setMyUsername(name);
+      usernameModal.hidden = true;
+      usernameSaveBtn.removeEventListener('click', submit);
+      usernameInput.removeEventListener('keydown', onKeydown);
+      resolve(name);
+    };
+    const onKeydown = (e) => { if (e.key === 'Enter') submit(); };
+
+    usernameSaveBtn.addEventListener('click', submit);
+    usernameInput.addEventListener('keydown', onKeydown);
+  });
+}
+
 function loadFriends() {
   try {
     const friends = JSON.parse(localStorage.getItem('patycord.friends') || '[]');
@@ -57,16 +95,27 @@ function saveFriends(friends) {
   localStorage.setItem('patycord.friends', JSON.stringify(friends));
 }
 
-function addFriend(name, id) {
+function addFriend(id) {
   const friends = loadFriends();
-  const existing = friends.find((f) => f.id === id);
-  if (existing) {
-    existing.name = name;
-  } else {
-    friends.push({ id, name });
-  }
+  if (friends.some((f) => f.id === id)) return;
+  friends.push({ id, name: remoteNames.get(id) || null });
   saveFriends(friends);
   renderPeerList();
+}
+
+// Someone told us their name (via the data-connection handshake) — update our live
+// cache and, if we've saved them as a friend, their stored name too.
+function learnName(id, name) {
+  if (!name) return;
+  remoteNames.set(id, name);
+  const friends = loadFriends();
+  const friend = friends.find((f) => f.id === id);
+  if (friend && friend.name !== name) {
+    friend.name = name;
+    saveFriends(friends);
+  }
+  renderPeerList();
+  renderIncomingCalls();
 }
 
 function removeFriend(id) {
@@ -109,7 +158,7 @@ function renderPeerList() {
     const buttonLabel = inCall ? (connected ? 'Hang up' : 'Cancel') : 'Call';
     li.innerHTML = `
       <span class="status"><span class="dot ${isOnline ? 'online' : ''}"></span>
-        <span class="name">${escapeHtml(friend.name)}</span> <span class="id">${escapeHtml(friend.id)}</span></span>
+        <span class="name">${escapeHtml(friendName(friend.id))}</span> <span class="id">${escapeHtml(friend.id)}</span></span>
       <span class="status">
         <button class="callToggleBtn secondary">${buttonLabel}</button>
         <button class="removeBtn" title="Remove">×</button>
@@ -198,7 +247,8 @@ function connectTo(id) {
   if (!peer || id === peer.id || calls.has(id)) return;
   if (!dataConnections.has(id)) {
     const conn = peer.connect(id);
-    conn.on('data', (msg) => handleDataMessage(msg));
+    conn.on('open', () => conn.send({ type: 'hello', name: getMyUsername() }));
+    conn.on('data', (msg) => handleDataMessage(id, msg));
     conn.on('error', () => {}); // connectivity errors surface via the call itself
     dataConnections.set(id, conn);
   }
@@ -212,6 +262,7 @@ function connectTo(id) {
 // new joiner and auto-answer, same as any other call.
 function handleIncomingDataConnection(conn) {
   conn.on('open', () => {
+    conn.send({ type: 'hello', name: getMyUsername() });
     const roster = [...calls.keys()].filter((id) => id !== conn.peer);
     conn.send({ type: 'roster', peers: roster });
     for (const [otherId, otherConn] of dataConnections) {
@@ -219,15 +270,17 @@ function handleIncomingDataConnection(conn) {
     }
     dataConnections.set(conn.peer, conn);
   });
-  conn.on('data', (msg) => handleDataMessage(msg));
+  conn.on('data', (msg) => handleDataMessage(conn.peer, msg));
   conn.on('close', () => dataConnections.delete(conn.peer));
 }
 
-function handleDataMessage(msg) {
-  if (msg.type === 'roster') {
+function handleDataMessage(fromId, msg) {
+  if (msg.type === 'hello') {
+    learnName(fromId, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
+  } else if (msg.type === 'roster') {
     for (const id of msg.peers) meshCall(id);
   } else if (msg.type === 'peer-joined') {
-    log(`${msg.id} is joining the call`);
+    log(`${friendName(msg.id)} is joining the call`);
   }
 }
 
@@ -254,7 +307,7 @@ function probeAllFriends() {
 }
 
 function friendName(id) {
-  return loadFriends().find((f) => f.id === id)?.name || id;
+  return remoteNames.get(id) || loadFriends().find((f) => f.id === id)?.name || id;
 }
 
 function renderIncomingCalls() {
@@ -369,6 +422,7 @@ async function requestMic() {
 }
 
 async function main() {
+  if (!getMyUsername()) await promptForUsername();
   if (!(await requestMic())) return;
 
   // A stable ID (saved locally) means friends you've added stay valid across restarts.
@@ -416,13 +470,11 @@ async function main() {
   peer.on('disconnected', () => toast('Lost connection to the signaling server, reconnecting…', 'info'));
 
   callBtn.addEventListener('click', () => {
-    const name = friendNameInput.value.trim() || 'friend';
     const id = peerIdInput.value.trim();
     if (!id || id === peer.id) return;
-    addFriend(name, id);
-    friendNameInput.value = '';
+    addFriend(id);
     peerIdInput.value = '';
-    log(`added ${name} — press Call to connect`);
+    log(`added ${friendName(id)} — press Call to connect`);
   });
 
   peerIdInput.addEventListener('keydown', (e) => {
@@ -441,6 +493,8 @@ retryMicBtn.addEventListener('click', () => {
   main();
 });
 
+editNameBtn.addEventListener('click', () => promptForUsername());
+
 muteBtn.addEventListener('click', () => {
   if (!localStream) return;
   muted = !muted;
@@ -454,6 +508,7 @@ shareScreenBtn.addEventListener('click', () => {
   else startScreenShare();
 });
 
+if (getMyUsername()) myNameEl.textContent = getMyUsername();
 saveFriends(loadFriends()); // persist the cleanup of any bad entries from past bugs
 renderPeerList();
 main();
