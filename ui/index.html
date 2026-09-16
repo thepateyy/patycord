@@ -181,6 +181,11 @@
     animation: toast-in 0.15s ease-out;
   }
   #settingsModal .card { width: min(320px, 90%); margin: 0; }
+  .toggleRow {
+    display: flex; align-items: center; gap: 8px; cursor: pointer;
+    text-transform: none; font-size: 13px; color: var(--text); font-weight: 500;
+  }
+  .toggleRow input { width: 15px; height: 15px; accent-color: var(--accent); }
   .modalHeader { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
   .modalHeader label { margin: 0; }
   .modalHeader .ghost { font-size: 16px; padding: 2px 8px; }
@@ -265,6 +270,12 @@
         <div id="myId">connecting…</div>
         <button id="copyBtn" class="secondary">Copy</button>
       </div>
+
+      <label style="margin-top:12px;">Audio</label>
+      <label class="toggleRow">
+        <input type="checkbox" id="noiseSuppressionToggle">
+        <span>Noise suppression</span>
+      </label>
     </div>
   </div>
 
