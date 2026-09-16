@@ -181,11 +181,26 @@
     animation: toast-in 0.15s ease-out;
   }
   #settingsModal .card { width: min(320px, 90%); margin: 0; }
-  .toggleRow {
-    display: flex; align-items: center; gap: 8px; cursor: pointer;
+  .switchRow { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .switchLabel {
     text-transform: none; font-size: 13px; color: var(--text); font-weight: 500;
+    display: flex; flex-direction: column; gap: 2px;
   }
-  .toggleRow input { width: 15px; height: 15px; accent-color: var(--accent); }
+  .switchLabel small { color: var(--text-muted); font-size: 11px; font-weight: 400; }
+
+  .switch { position: relative; display: inline-block; width: 40px; height: 23px; flex-shrink: 0; cursor: pointer; }
+  .switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; z-index: 1; }
+  .switchTrack {
+    position: absolute; inset: 0; background: var(--bg-elev-2); border: 1px solid var(--border);
+    border-radius: 999px; transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  .switchKnob {
+    position: absolute; top: 2px; left: 2px; width: 17px; height: 17px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.4); transition: transform 0.15s ease;
+  }
+  .switch input:checked ~ .switchTrack { background: var(--accent); border-color: var(--accent); }
+  .switch input:checked ~ .switchTrack .switchKnob { transform: translateX(17px); }
+  .switch input:focus-visible ~ .switchTrack { outline: 2px solid var(--accent); outline-offset: 2px; }
   .modalHeader { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
   .modalHeader label { margin: 0; }
   .modalHeader .ghost { font-size: 16px; padding: 2px 8px; }
@@ -272,10 +287,16 @@
       </div>
 
       <label style="margin-top:12px;">Audio</label>
-      <label class="toggleRow">
-        <input type="checkbox" id="noiseSuppressionToggle">
-        <span>Noise suppression</span>
-      </label>
+      <div class="switchRow">
+        <span class="switchLabel">
+          Noise suppression
+          <small>Filters background noise from your mic</small>
+        </span>
+        <label class="switch">
+          <input type="checkbox" id="noiseSuppressionToggle">
+          <span class="switchTrack"><span class="switchKnob"></span></span>
+        </label>
+      </div>
     </div>
   </div>
 
