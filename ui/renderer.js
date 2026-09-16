@@ -6,6 +6,7 @@ const settingsModal = document.getElementById('settingsModal');
 const closeSettingsBtn = document.getElementById('closeSettingsBtn');
 const settingsNameInput = document.getElementById('settingsNameInput');
 const settingsSaveNameBtn = document.getElementById('settingsSaveNameBtn');
+const noiseSuppressionToggle = document.getElementById('noiseSuppressionToggle');
 const usernameModal = document.getElementById('usernameModal');
 const usernameInput = document.getElementById('usernameInput');
 const usernameSaveBtn = document.getElementById('usernameSaveBtn');
@@ -96,6 +97,15 @@ function getMyPersistentId() {
     localStorage.setItem('patycord.myId', id);
   }
   return id;
+}
+
+function getNoiseSuppressionEnabled() {
+  return localStorage.getItem('patycord.noiseSuppression') !== 'off'; // on by default
+}
+
+function setNoiseSuppressionEnabled(enabled) {
+  localStorage.setItem('patycord.noiseSuppression', enabled ? 'on' : 'off');
+  localStream?.getAudioTracks()[0]?.applyConstraints({ noiseSuppression: enabled }).catch(() => {});
 }
 
 function getMyUsername() {
@@ -542,7 +552,12 @@ function stopScreenShare() {
 
 async function requestMic() {
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    // WebView2's built-in WebRTC audio processing handles all of this natively —
+    // no extra library needed.
+    localStream = await navigator.mediaDevices.getUserMedia({
+      audio: { noiseSuppression: getNoiseSuppressionEnabled(), echoCancellation: true, autoGainControl: true },
+      video: false,
+    });
     return true;
   } catch (err) {
     toast(`Microphone access failed: ${err.message} — check your mic is connected and restart patycord`);
@@ -620,9 +635,13 @@ copyBtn.addEventListener('click', () => {
 
 settingsBtn.addEventListener('click', () => {
   settingsNameInput.value = getMyUsername();
+  noiseSuppressionToggle.checked = getNoiseSuppressionEnabled();
   settingsModal.hidden = false;
 });
 closeSettingsBtn.addEventListener('click', () => { settingsModal.hidden = true; });
+noiseSuppressionToggle.addEventListener('change', () => {
+  setNoiseSuppressionEnabled(noiseSuppressionToggle.checked);
+});
 settingsSaveNameBtn.addEventListener('click', () => {
   const name = settingsNameInput.value.trim();
   if (!name) return;
