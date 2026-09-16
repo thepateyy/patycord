@@ -4,101 +4,241 @@
 <meta charset="UTF-8">
 <title>patycord</title>
 <style>
+  :root {
+    --bg: #0d1220;
+    --bg-elev: #151d33;
+    --bg-elev-2: #1d2848;
+    --border: #2b3760;
+    --text: #eef1fb;
+    --text-muted: #8892b8;
+    --accent: #3f7ff5;
+    --accent-hover: #2f68d9;
+    --success: #2fb673;
+    --danger: #e6555f;
+    --radius: 12px;
+    --radius-sm: 8px;
+  }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     margin: 0;
-    background: #1e1f22;
-    color: #dcddde;
-    font-family: -apple-system, Segoe UI, sans-serif;
-    padding: 16px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", sans-serif;
+    overflow: hidden;
   }
-  h1 { font-size: 16px; margin: 0 0 12px; color: #fff; }
-  .box {
-    background: #2b2d31;
-    border-radius: 6px;
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--bg-elev-2); border-radius: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  .app { display: flex; height: 100vh; }
+
+  .sidebar {
+    width: 250px; flex-shrink: 0; background: var(--bg-elev); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; padding: 14px; gap: 12px; overflow-y: auto;
+  }
+  .main {
+    flex: 1; min-width: 0; display: flex; flex-direction: column;
+    background: radial-gradient(circle at 85% -10%, rgba(63,127,245,0.14), transparent 45%), var(--bg);
+  }
+  .mainScroll { flex: 1; overflow-y: auto; padding: 16px; }
+
+  .appHeader { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .appHeader img { width: 28px; height: 28px; border-radius: 8px; }
+  .appHeader h1 { font-size: 15px; margin: 0; color: #fff; font-weight: 700; letter-spacing: 0.2px; }
+
+  .card {
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
     padding: 12px;
-    margin-bottom: 12px;
   }
-  label { font-size: 11px; text-transform: uppercase; color: #949ba4; display: block; margin-bottom: 4px; }
-  .id-row { display: flex; gap: 6px; align-items: center; }
-  #myId, #myName { font-family: monospace; font-size: 13px; background: #1e1f22; padding: 6px 8px; border-radius: 4px; flex: 1; user-select: all; overflow-wrap: anywhere; }
+  .sidebar .card { background: var(--bg); }
+  .friendsCard { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .friendsCard label { flex-shrink: 0; }
+  .friendsCard ul { flex: 1; overflow-y: auto; }
+  label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); display: block; margin-bottom: 6px; font-weight: 600; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  #myId {
+    font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 12.5px;
+    background: var(--bg); border: 1px solid var(--border);
+    padding: 7px 10px; border-radius: var(--radius-sm); flex: 1;
+    user-select: all; overflow-wrap: anywhere;
+  }
+
+  .profileRow {
+    display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+    margin-bottom: 4px;
+  }
+  .profileRow .avatar { width: 32px; height: 32px; font-size: 12.5px; }
+  .profileName {
+    flex: 1; min-width: 0; font-weight: 700; font-size: 13.5px; color: #fff;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .profileRow .dockBtn { width: 32px; height: 32px; background: transparent; }
+  .profileRow .dockBtn svg { width: 17px; height: 17px; }
+  .profileRow .dockBtn:hover { background: var(--bg-elev-2); }
+
   button {
-    background: #5865f2; color: #fff; border: none; border-radius: 4px;
-    padding: 7px 12px; cursor: pointer; font-size: 13px;
+    background: var(--accent); color: #fff; border: none; border-radius: var(--radius-sm);
+    padding: 8px 13px; cursor: pointer; font-size: 13px; font-weight: 600;
+    transition: background 0.12s ease, transform 0.06s ease;
   }
-  button:hover { background: #4752c4; }
-  button.secondary { background: #4e5058; }
-  button.secondary:hover { background: #6d6f78; }
+  button:hover { background: var(--accent-hover); }
+  button:active { transform: scale(0.97); }
+  button.secondary { background: var(--bg-elev-2); color: var(--text); }
+  button.secondary:hover { background: #3a3b40; }
+  button.ghost { background: transparent; color: var(--text-muted); }
+  button.ghost:hover { background: var(--bg-elev-2); color: var(--text); }
+
   input[type=text] {
-    background: #1e1f22; border: 1px solid #3f4147; color: #dcddde;
-    border-radius: 4px; padding: 7px 8px; font-size: 13px; width: 100%;
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    border-radius: var(--radius-sm); padding: 8px 10px; font-size: 13px; width: 100%;
+    transition: border-color 0.12s ease;
   }
+  input[type=text]:focus { outline: none; border-color: var(--accent); }
   .connect-row { display: flex; gap: 6px; margin-top: 8px; }
   .connect-row input { flex: 1; }
+
   ul { list-style: none; margin: 0; padding: 0; }
-  li { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #3f4147; font-size: 12px; }
-  li:last-child { border-bottom: none; }
-  li .name { font-family: -apple-system, Segoe UI, sans-serif; }
-  li .id { font-family: monospace; color: #949ba4; font-size: 11px; }
-  li .status { display: flex; align-items: center; gap: 6px; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: #4e5058; flex-shrink: 0; }
-  .dot.online { background: #23a55a; }
-  .removeBtn { background: transparent; color: #949ba4; padding: 2px 6px; font-size: 14px; }
-  .removeBtn:hover { background: #da373c; color: #fff; }
-  #status { font-size: 12px; color: #949ba4; margin-top: 8px; white-space: pre-wrap; }
-  #muteBtn.muted { background: #da373c; }
-  .empty { color: #6d6f78; font-size: 12px; padding: 4px 0; }
+  li.friendRow {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 6px; border-radius: var(--radius-sm); font-size: 13px;
+    transition: background 0.12s ease;
+  }
+  li.friendRow:hover { background: var(--bg-elev-2); }
+  .who { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .avatar {
+    width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; color: #fff;
+    box-shadow: inset 0 0 0 2px rgba(255,255,255,0.08);
+  }
+  .who-text { min-width: 0; }
+  .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+  .id { font-family: ui-monospace, monospace; color: var(--text-muted); font-size: 10.5px; }
+  .actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+
+  .avatarWrap { position: relative; flex-shrink: 0; }
+  .avatarWrap .dot { position: absolute; right: -1px; bottom: -1px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bg-elev-2); box-shadow: 0 0 0 2.5px var(--bg-elev); }
+  .dot.online { background: var(--success); box-shadow: 0 0 0 2.5px var(--bg-elev), 0 0 6px 1px rgba(47,182,115,0.6); }
+
+  .removeBtn { padding: 4px 8px; font-size: 15px; line-height: 1; }
+  .empty { color: #6b6c72; font-size: 12.5px; padding: 6px 0; }
+
+  #incomingCalls { display: flex; flex-direction: column; gap: 8px; }
   .incomingCall {
-    background: #3a3d5c; border: 1px solid #5865f2; border-radius: 6px;
-    padding: 10px 12px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;
+    background: linear-gradient(135deg, rgba(63,127,245,0.22), rgba(63,127,245,0.06));
+    border: 1px solid var(--accent); border-radius: var(--radius);
+    padding: 12px 14px; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center;
+    animation: ring-in 0.2s ease-out;
   }
-  .acceptBtn { background: #23a55a; }
-  .acceptBtn:hover { background: #1a7d44; }
-  .declineBtn { background: #da373c; }
-  .declineBtn:hover { background: #a52b2f; }
-  #toasts {
-    position: fixed; top: 12px; right: 12px; left: 12px;
-    display: flex; flex-direction: column; gap: 6px; z-index: 100;
-  }
+  .incomingCall .who { gap: 12px; }
+  .incomingCall .avatar { width: 38px; height: 38px; font-size: 14px; animation: ring 1s ease-in-out infinite; }
+  @keyframes ring { 0%, 100% { transform: rotate(0deg); } 25% { transform: rotate(-8deg); } 75% { transform: rotate(8deg); } }
+  @keyframes ring-in { from { opacity: 0; transform: translateY(-8px) scale(0.97); } }
+  .callLabel { font-size: 12px; color: var(--text-muted); display: block; }
+  .callName { font-size: 14px; font-weight: 700; color: #fff; }
+  .acceptBtn { background: var(--success); }
+  .acceptBtn:hover { background: #24925f; }
+  .declineBtn { background: var(--danger); }
+  .declineBtn:hover { background: #c73f48; }
+
+  #toasts { position: fixed; top: 12px; right: 12px; left: 12px; display: flex; flex-direction: column; gap: 6px; z-index: 100; }
   .toast {
-    background: #2b2d31; border-left: 3px solid #da373c; color: #fff;
-    border-radius: 4px; padding: 10px 12px; font-size: 13px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    background: var(--bg-elev); border: 1px solid var(--border); border-left: 3px solid var(--danger); color: #fff;
+    border-radius: var(--radius-sm); padding: 10px 12px; font-size: 13px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.45);
     animation: toast-in 0.15s ease-out;
   }
-  .toast.info { border-left-color: #5865f2; }
+  .toast.info { border-left-color: var(--accent); }
   @keyframes toast-in { from { opacity: 0; transform: translateY(-6px); } }
-  #screenGrid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 8px; margin-bottom: 12px;
-  }
-  .screenTile { position: relative; background: #000; border-radius: 6px; overflow: hidden; }
+
+  #screenGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-bottom: 12px; }
+  .screenTile { position: relative; background: #000; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border); }
   .screenTile video { width: 100%; display: block; }
   .screenTile .label {
-    position: absolute; bottom: 4px; left: 6px; font-size: 11px; color: #fff;
-    background: rgba(0,0,0,0.6); padding: 2px 6px; border-radius: 3px;
+    position: absolute; bottom: 6px; left: 6px; font-size: 11px; font-weight: 600; color: #fff;
+    background: rgba(0,0,0,0.55); backdrop-filter: blur(4px); padding: 3px 8px; border-radius: 20px;
   }
-  #shareScreenBtn.sharing { background: #da373c; }
+
   #usernameModal[hidden] { display: none; }
   #usernameModal {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    position: fixed; inset: 0; background: rgba(0,0,0,0.65); backdrop-filter: blur(2px);
     display: flex; align-items: center; justify-content: center; z-index: 200;
+    animation: toast-in 0.15s ease-out;
   }
-  #usernameModal .box { width: min(280px, 90%); margin: 0; }
-  #usernameModal p { margin: 0 0 10px; font-size: 13px; color: #dcddde; }
-  .editNameBtn { background: transparent; color: #949ba4; padding: 2px 6px; font-size: 12px; }
-  .editNameBtn:hover { background: #4e5058; color: #fff; }
+  #usernameModal .card { width: min(300px, 90%); margin: 0; text-align: center; }
+  #usernameModal .avatar { width: 48px; height: 48px; font-size: 18px; margin: 0 auto 10px; }
+  #usernameModal p { margin: 0 0 12px; font-size: 13.5px; color: var(--text); }
+
+  #settingsModal[hidden] { display: none; }
+  #settingsModal {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.65); backdrop-filter: blur(2px);
+    display: flex; align-items: center; justify-content: center; z-index: 200;
+    animation: toast-in 0.15s ease-out;
+  }
+  #settingsModal .card { width: min(320px, 90%); margin: 0; }
+  .modalHeader { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  .modalHeader label { margin: 0; }
+  .modalHeader .ghost { font-size: 16px; padding: 2px 8px; }
+
+  /* control dock */
+  #dock {
+    flex-shrink: 0; border-top: 1px solid var(--border);
+    padding: 12px; display: flex; align-items: center; justify-content: center; gap: 10px;
+  }
+  .dockBtn {
+    width: 42px; height: 42px; border-radius: 50%; background: var(--bg-elev-2);
+    display: flex; align-items: center; justify-content: center; padding: 0; flex-shrink: 0;
+  }
+  .dockBtn:hover { background: #3a3b40; }
+  .dockBtn svg { width: 19px; height: 19px; }
+  .dockBtn.active { background: var(--danger); }
+  .dockBtn.active:hover { background: #c73f48; }
+  .dockBtn.sharing { background: var(--accent); }
+  .dockBtn.sharing:hover { background: var(--accent-hover); }
+
+  #logPanel[hidden] { display: none; }
+  #logPanel {
+    flex-shrink: 0; max-height: 160px; overflow-y: auto;
+    border-top: 1px solid var(--border);
+    padding: 10px 16px;
+  }
+  #status { font-size: 11.5px; color: var(--text-muted); white-space: pre-wrap; font-family: ui-monospace, monospace; }
+
+  .callParticipants { display: flex; flex-wrap: wrap; gap: 16px; padding-bottom: 6px; }
+  .participant { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 76px; }
+  .participant .avatar { width: 54px; height: 54px; font-size: 17px; }
+  .participant.dialing .avatar { opacity: 0.45; }
+  .participant .pname { font-size: 11.5px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
+  .emptyState { color: var(--text-muted); font-size: 13px; text-align: center; padding: 60px 20px; }
+  .emptyState svg { width: 40px; height: 40px; margin-bottom: 10px; opacity: 0.5; }
+
+  .chatPanel[hidden] { display: none; }
+  .chatPanel {
+    width: 250px; flex-shrink: 0; border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; background: var(--bg-elev);
+  }
+  .chatHeader {
+    padding: 12px 14px; border-bottom: 1px solid var(--border);
+    font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted);
+  }
+  .chatMessages { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+  .chatMsg { font-size: 12.5px; line-height: 1.4; }
+  .chatMsg .who { font-weight: 700; }
+  .chatMsg .time { color: var(--text-muted); font-size: 10px; margin-left: 6px; }
+  .chatMsg .text { display: block; overflow-wrap: anywhere; }
+  .chatInputRow { display: flex; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--border); }
+  .chatInputRow input { flex: 1; }
 </style>
 </head>
 <body>
-  <h1>patycord</h1>
-
-  <div id="toasts"></div>
-  <div id="incomingCalls"></div>
-  <div id="screenGrid"></div>
-
   <div id="usernameModal" hidden>
-    <div class="box">
+    <div class="card">
+      <div class="avatar" id="usernameAvatar" style="background:#3f7ff5;">?</div>
       <p>What should people see when you call them?</p>
       <div class="connect-row">
         <input type="text" id="usernameInput" placeholder="your name" maxlength="40">
@@ -107,40 +247,87 @@
     </div>
   </div>
 
-  <div class="box">
-    <label>Your name</label>
-    <div class="id-row">
-      <div id="myName">—</div>
-      <button id="editNameBtn" class="secondary editNameBtn">Edit</button>
+  <div id="settingsModal" hidden>
+    <div class="card">
+      <div class="modalHeader">
+        <label>Settings</label>
+        <button id="closeSettingsBtn" class="ghost">×</button>
+      </div>
+
+      <label>Your name</label>
+      <div class="row">
+        <input type="text" id="settingsNameInput" maxlength="40">
+        <button id="settingsSaveNameBtn">Save</button>
+      </div>
+
+      <label style="margin-top:12px;">Your ID (share this to let others join you)</label>
+      <div class="row">
+        <div id="myId">connecting…</div>
+        <button id="copyBtn" class="secondary">Copy</button>
+      </div>
     </div>
   </div>
 
-  <div class="box">
-    <label>Your ID (share this to let others join you)</label>
-    <div class="id-row">
-      <div id="myId">connecting…</div>
-      <button id="copyBtn" class="secondary">Copy</button>
-    </div>
+  <div id="toasts"></div>
+
+  <div class="app">
+    <aside class="sidebar">
+      <div class="appHeader">
+        <img src="logo.png" alt="">
+        <h1>patycord</h1>
+      </div>
+
+      <div class="profileRow">
+        <div class="avatar" id="profileAvatar" style="background:#3f7ff5;">?</div>
+        <div id="myName" class="profileName">—</div>
+        <button id="settingsBtn" class="dockBtn ghost" title="Settings"></button>
+      </div>
+
+      <div class="card">
+        <label>Add a friend</label>
+        <div class="connect-row">
+          <input type="text" id="peerIdInput" placeholder="their ID">
+          <button id="callBtn">Add</button>
+        </div>
+      </div>
+
+      <div class="card friendsCard">
+        <label>Friends (<span id="peerCount">0</span> in call)</label>
+        <ul id="peerList"></ul>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="mainScroll">
+        <div id="incomingCalls"></div>
+        <div class="callParticipants" id="callParticipants"></div>
+        <div id="screenGrid"></div>
+        <div class="emptyState" id="callEmptyState">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+          <div>Not in a call — pick a friend on the left and hit Call.</div>
+        </div>
+      </div>
+
+      <div id="logPanel" hidden>
+        <div id="status"></div>
+      </div>
+
+      <div id="dock">
+        <button id="muteBtn" class="dockBtn" title="Mute"></button>
+        <button id="shareScreenBtn" class="dockBtn" title="Share screen"></button>
+        <button id="logToggleBtn" class="dockBtn" title="Activity log"></button>
+      </div>
+    </main>
+
+    <aside class="chatPanel" id="chatPanel" hidden>
+      <div class="chatHeader">Chat</div>
+      <div class="chatMessages" id="chatMessages"></div>
+      <div class="chatInputRow">
+        <input type="text" id="chatInput" placeholder="Message" maxlength="2000">
+        <button id="chatSendBtn">Send</button>
+      </div>
+    </aside>
   </div>
-
-  <div class="box">
-    <label>Add a friend (one-time — swap IDs once, never again)</label>
-    <div class="connect-row">
-      <input type="text" id="peerIdInput" placeholder="their ID">
-      <button id="callBtn">Add</button>
-    </div>
-  </div>
-
-  <div class="box">
-    <label>Friends (<span id="peerCount">0</span> in call)</label>
-    <ul id="peerList"></ul>
-  </div>
-
-  <button id="muteBtn">Mute</button>
-  <button id="shareScreenBtn" class="secondary">Share screen</button>
-  <button id="retryMicBtn" class="secondary">Retry mic access</button>
-
-  <div id="status"></div>
 
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <script src="renderer.js"></script>
