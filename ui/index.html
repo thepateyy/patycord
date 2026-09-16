@@ -117,7 +117,11 @@
   }
   .who-text { min-width: 0; }
   .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
-  .id { font-family: ui-monospace, monospace; color: var(--text-muted); font-size: 10.5px; }
+  .tag { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 10.5px; }
+  .tag .tagName { color: var(--text-muted); }
+  .tag .tagHash { color: var(--text-muted); opacity: 0.65; }
+  #myId .tag { font-size: 13px; }
+  #myId .tagName { color: var(--text); font-weight: 600; }
   .actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 
   .avatarWrap { position: relative; flex-shrink: 0; }

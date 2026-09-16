@@ -74,6 +74,19 @@ function avatarHtml(id, name, extraClass = '') {
   return `<div class="avatar ${extraClass}" style="background:${colorForId(id)}">${escapeHtml(initialsFor(name))}</div>`;
 }
 
+// A Discord-style "Name#1234" tag, purely for display — the real connection
+// ID underneath never changes and is what Copy buttons actually put on the
+// clipboard, so nobody ever has to read or retype the ugly part.
+function tagFor(id, name) {
+  const suffix = id.slice(-4).toUpperCase();
+  return `${name || 'Anonymous'}#${suffix}`;
+}
+
+function tagHtml(id, name) {
+  const suffix = id.slice(-4).toUpperCase();
+  return `<span class="tag"><span class="tagName">${escapeHtml(name || 'Anonymous')}</span><span class="tagHash">#${escapeHtml(suffix)}</span></span>`;
+}
+
 // --- icons (inline SVG, no icon font/library needed) --------------------
 
 function icon(paths) {
@@ -228,7 +241,7 @@ function renderPeerList() {
         </span>
         <span class="who-text">
           <span class="name">${escapeHtml(name)}</span>
-          <span class="id">${escapeHtml(friend.id)}</span>
+          ${tagHtml(friend.id, name)}
         </span>
       </span>
       <span class="actions">
@@ -255,7 +268,7 @@ function renderPeerList() {
         <span class="avatarWrap">${avatarHtml(id, name)}<span class="dot online"></span></span>
         <span class="who-text">
           <span class="name">${escapeHtml(name)}</span>
-          <span class="id">not saved</span>
+          ${tagHtml(id, name)}
         </span>
       </span>`;
     peerListEl.appendChild(li);
@@ -440,7 +453,7 @@ function probeAllFriends() {
 }
 
 function friendName(id) {
-  return remoteNames.get(id) || loadFriends().find((f) => f.id === id)?.name || id;
+  return remoteNames.get(id) || loadFriends().find((f) => f.id === id)?.name || 'Unknown';
 }
 
 function renderIncomingCalls() {
@@ -574,7 +587,7 @@ async function main() {
   peer = new Peer(getMyPersistentId()); // uses PeerJS's free public cloud broker for signaling only
 
   peer.on('open', (id) => {
-    myIdEl.textContent = id;
+    myIdEl.innerHTML = tagHtml(id, getMyUsername());
     log('ready — press Call next to a friend to connect');
     renderPeerList();
     probeAllFriends();
@@ -628,7 +641,8 @@ async function main() {
 }
 
 copyBtn.addEventListener('click', () => {
-  navigator.clipboard.writeText(myIdEl.textContent);
+  if (!peer) return;
+  navigator.clipboard.writeText(peer.id); // the real connection ID, not the pretty tag shown on screen
   copyBtn.textContent = 'Copied!';
   setTimeout(() => (copyBtn.textContent = 'Copy'), 1200);
 });
