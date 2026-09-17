@@ -105,19 +105,19 @@
   li.friendRow {
     display: flex; justify-content: space-between; align-items: center;
     padding: 8px 6px; border-radius: var(--radius-sm); font-size: 13px;
-    transition: background 0.12s ease;
+    transition: background 0.12s ease; overflow: hidden;
   }
   li.friendRow:hover { background: var(--bg-elev-2); }
-  .who { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .who { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 auto; }
   .avatar {
     width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
     display: flex; align-items: center; justify-content: center;
     font-size: 12px; font-weight: 700; color: #fff;
     box-shadow: inset 0 0 0 2px rgba(255,255,255,0.08);
   }
-  .who-text { min-width: 0; }
+  .who-text { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; overflow: hidden; }
   .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
-  .tag { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 10.5px; }
+  .tag { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
   .tag .tagName { color: var(--text-muted); }
   .tag .tagHash { color: var(--text-muted); opacity: 0.65; }
   #myId .tag { font-size: 13px; }
@@ -129,10 +129,19 @@
   .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bg-elev-2); box-shadow: 0 0 0 2.5px var(--bg-elev); }
   .dot.online { background: var(--success); box-shadow: 0 0 0 2.5px var(--bg-elev), 0 0 6px 1px rgba(47,182,115,0.6); }
 
-  .removeBtn { padding: 4px 8px; font-size: 15px; line-height: 1; }
+  .removeBtn { padding: 4px 8px; font-size: 15px; line-height: 1; flex-shrink: 0; }
+  .callToggleBtn {
+    width: 28px; height: 28px; border-radius: 50%; padding: 0; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .callToggleBtn svg { width: 14px; height: 14px; }
+  .callToggleBtn.callBtnIcon { background: var(--success); }
+  .callToggleBtn.callBtnIcon:hover { background: #24925f; }
+  .callToggleBtn.hangupBtn { background: var(--danger); }
+  .callToggleBtn.hangupBtn:hover { background: #c73f48; }
   .empty { color: #6b6c72; font-size: 12.5px; padding: 6px 0; }
 
-  #incomingCalls { display: flex; flex-direction: column; gap: 8px; }
+  #incomingCalls, #friendRequests { display: flex; flex-direction: column; gap: 8px; }
   .incomingCall {
     background: linear-gradient(135deg, rgba(63,127,245,0.22), rgba(63,127,245,0.06));
     border: 1px solid var(--accent); border-radius: var(--radius);
@@ -366,6 +375,7 @@
     <main class="main">
       <div class="mainScroll">
         <div id="incomingCalls"></div>
+        <div id="friendRequests"></div>
         <div class="callParticipants" id="callParticipants"></div>
         <div id="screenGrid"></div>
         <div class="emptyState" id="callEmptyState">

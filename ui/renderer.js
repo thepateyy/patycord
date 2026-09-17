@@ -21,6 +21,7 @@ const logToggleBtn = document.getElementById('logToggleBtn');
 const logPanel = document.getElementById('logPanel');
 const statusEl = document.getElementById('status');
 const incomingCallsEl = document.getElementById('incomingCalls');
+const friendRequestsEl = document.getElementById('friendRequests');
 const toastsEl = document.getElementById('toasts');
 const screenGridEl = document.getElementById('screenGrid');
 const callParticipantsEl = document.getElementById('callParticipants');
@@ -46,6 +47,7 @@ const pendingCalls = new Map(); // peerId -> MediaConnection, awaiting Accept/De
 const outgoingScreenCalls = new Map(); // peerId -> MediaConnection, us sharing our screen to them
 const screenTiles = new Map(); // peerId -> { call, tileEl }, someone else's screen we're viewing
 const remoteNames = new Map(); // peerId -> name they told us about themselves, live
+const pendingFriendRequests = new Map(); // peerId -> name, awaiting Accept/Decline
 
 // Peer IDs and call metadata come from whoever is calling us — including strangers,
 // not just saved friends — so they must never go into innerHTML unescaped.
@@ -106,6 +108,8 @@ const ICONS = {
   volumeHigh: icon('<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>'),
   volumeLow: icon('<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>'),
   volumeMute: icon('<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>'),
+  phone: icon('<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>'),
+  phoneOff: icon('<path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67m-2.67-3.34a19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91"/><line x1="23" y1="1" x2="1" y2="23"/>'),
 };
 
 // --- persistent identity & friends list -------------------------------
@@ -239,7 +243,6 @@ function renderPeerList() {
     const name = friendName(friend.id);
     const li = document.createElement('li');
     li.className = 'friendRow';
-    const buttonLabel = inCall ? (connected ? 'Hang up' : 'Cancel') : 'Call';
     li.innerHTML = `
       <span class="who">
         <span class="avatarWrap">
@@ -252,10 +255,12 @@ function renderPeerList() {
         </span>
       </span>
       <span class="actions">
-        <button class="callToggleBtn secondary">${buttonLabel}</button>
+        <button class="callToggleBtn ${inCall ? 'hangupBtn' : 'callBtnIcon'}" title="${inCall ? (connected ? 'Hang up' : 'Cancel') : 'Call'}"></button>
         <button class="removeBtn ghost" title="Remove">×</button>
       </span>`;
-    li.querySelector('.callToggleBtn').addEventListener('click', () => {
+    const callToggleBtn = li.querySelector('.callToggleBtn');
+    callToggleBtn.innerHTML = inCall ? ICONS.phoneOff : ICONS.phone;
+    callToggleBtn.addEventListener('click', () => {
       if (calls.has(friend.id)) hangUp(friend.id);
       else connectTo(friend.id);
     });
@@ -263,7 +268,8 @@ function renderPeerList() {
     peerListEl.appendChild(li);
   }
 
-  // Anyone connected who isn't a saved friend (e.g. joined via mesh discovery)
+  // Anyone connected who isn't a saved friend (e.g. joined via mesh discovery, or
+  // someone who called us but we haven't added) — still needs a way to hang up.
   const friendIds = new Set(friends.map((f) => f.id));
   for (const id of calls.keys()) {
     if (friendIds.has(id)) continue;
@@ -277,7 +283,13 @@ function renderPeerList() {
           <span class="name">${escapeHtml(name)}</span>
           ${tagHtml(id, name)}
         </span>
+      </span>
+      <span class="actions">
+        <button class="callToggleBtn hangupBtn" title="Hang up"></button>
       </span>`;
+    const hangupBtn = li.querySelector('.callToggleBtn');
+    hangupBtn.innerHTML = ICONS.phoneOff;
+    hangupBtn.addEventListener('click', () => hangUp(id));
     peerListEl.appendChild(li);
   }
 
@@ -443,6 +455,17 @@ function ensureDataConnection(id) {
   return conn;
 }
 
+// Tells `id` "I added you" so they get an Accept prompt instead of having to
+// separately paste your ID back — only one side needs to do the copy/paste dance.
+// Best-effort: if they're offline right now it just silently doesn't arrive, same
+// as it always has for anyone not currently online.
+function sendFriendRequest(id) {
+  const conn = ensureDataConnection(id);
+  const send = () => conn.send({ type: 'friend-request', name: getMyUsername() });
+  if (conn.open) send();
+  else conn.on('open', send);
+}
+
 // Connect audio (+ a data channel, for chat) to a peer we've just learned about,
 // unless we're already connected to them.
 function meshCall(id) {
@@ -498,6 +521,10 @@ function handleDataMessage(fromId, msg) {
   } else if (msg.type === 'chat') {
     if (!calls.has(fromId)) return; // only from people actually in the call with us
     appendChatMessage(fromId, typeof msg.text === 'string' ? msg.text.slice(0, 2000) : '');
+  } else if (msg.type === 'friend-request') {
+    handleFriendRequest(fromId, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
+  } else if (msg.type === 'friend-accept') {
+    toast(`${friendName(fromId)} accepted your friend request`, 'info');
   }
 }
 
@@ -581,6 +608,48 @@ function renderIncomingCalls() {
   }
 }
 
+// --- friend requests -------------------------------------------------
+
+function handleFriendRequest(fromId, name) {
+  if (loadFriends().some((f) => f.id === fromId)) return; // already friends, nothing to do
+  if (pendingFriendRequests.has(fromId)) return; // already showing one from them
+  pendingFriendRequests.set(fromId, name);
+  renderFriendRequests(); // the banner itself is the notice — no need for a toast too
+}
+
+function renderFriendRequests() {
+  friendRequestsEl.innerHTML = '';
+  for (const [id, name] of pendingFriendRequests) {
+    const div = document.createElement('div');
+    div.className = 'incomingCall';
+    div.innerHTML = `
+      <span class="who">
+        ${avatarHtml(id, name)}
+        <span class="who-text">
+          <span class="callLabel">Friend request</span>
+          <span class="callName">${escapeHtml(name || 'Unknown')}</span>
+        </span>
+      </span>
+      <span class="actions">
+        <button class="acceptBtn">Accept</button>
+        <button class="declineBtn">Decline</button>
+      </span>`;
+    div.querySelector('.acceptBtn').addEventListener('click', () => {
+      pendingFriendRequests.delete(id);
+      learnName(id, name);
+      addFriend(id);
+      dataConnections.get(id)?.send({ type: 'friend-accept' });
+      toast(`Added ${name || 'them'} as a friend`, 'info');
+      renderFriendRequests();
+    });
+    div.querySelector('.declineBtn').addEventListener('click', () => {
+      pendingFriendRequests.delete(id);
+      renderFriendRequests();
+    });
+    friendRequestsEl.appendChild(div);
+  }
+}
+
 // --- screen sharing --------------------------------------------------
 
 function addScreenTile(peerId, call) {
@@ -591,7 +660,7 @@ function addScreenTile(peerId, call) {
   const video = document.createElement('video');
   video.autoplay = true;
   video.playsInline = true;
-  video.muted = true; // no audio track on this call anyway
+  // Not muted — if the sharer included system audio, we want to actually hear it.
   const label = document.createElement('div');
   label.className = 'label';
   label.textContent = `${friendName(peerId)}'s screen`;
@@ -624,7 +693,10 @@ function handleIncomingScreenShare(call) {
 
 async function startScreenShare() {
   try {
-    screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+    // audio: true captures system/app audio alongside the video when supported (typically
+    // only when sharing the whole screen, not a single window) — falls back to video-only
+    // silently if the OS/selection doesn't support it, no error either way.
+    screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
   } catch (err) {
     toast(`Screen share failed: ${err.message}`);
     return;
@@ -745,6 +817,7 @@ async function main() {
     const id = peerIdInput.value.trim();
     if (!id || id === peer.id) return;
     addFriend(id);
+    sendFriendRequest(id);
     peerIdInput.value = '';
     log(`added ${friendName(id)} — press Call to connect`);
   });
