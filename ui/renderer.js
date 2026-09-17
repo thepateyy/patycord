@@ -30,11 +30,15 @@ const chatPanelEl = document.getElementById('chatPanel');
 const chatMessagesEl = document.getElementById('chatMessages');
 const chatInputEl = document.getElementById('chatInput');
 const chatSendBtn = document.getElementById('chatSendBtn');
+const volumePopoverEl = document.getElementById('volumePopover');
 
 let localStream = null;
 let muted = false;
 let peer = null;
 let screenStream = null;
+let presenceProbeInterval = null;
+let reconnectTimer = null;
+let reconnectAttempts = 0;
 const calls = new Map(); // peerId -> { call, audioEl }
 const dataConnections = new Map(); // peerId -> DataConnection, for peers who joined *through* us
 const presence = new Map(); // peerId -> boolean, from lightweight background probes
@@ -99,6 +103,9 @@ const ICONS = {
   monitor: icon('<rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>'),
   list: icon('<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>'),
   gear: icon('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>'),
+  volumeHigh: icon('<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>'),
+  volumeLow: icon('<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>'),
+  volumeMute: icon('<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>'),
 };
 
 // --- persistent identity & friends list -------------------------------
@@ -118,7 +125,7 @@ function getNoiseSuppressionEnabled() {
 
 function setNoiseSuppressionEnabled(enabled) {
   localStorage.setItem('patycord.noiseSuppression', enabled ? 'on' : 'off');
-  localStream?.getAudioTracks()[0]?.applyConstraints({ noiseSuppression: enabled }).catch(() => {});
+  localStream?.getAudioTracks()[0]?.applyConstraints({ noiseSuppression: enabled, voiceIsolation: enabled }).catch(() => {});
 }
 
 function getMyUsername() {
@@ -281,13 +288,24 @@ function renderPeerList() {
 // The main panel's "who's in this call right now" view — separate from the
 // sidebar's friends list, which is about who you *know*, not who's connected.
 function renderCallPanel() {
+  closeVolumePopover(); // chip buttons are about to be torn down and rebuilt
   callEmptyStateEl.hidden = calls.size > 0;
   callParticipantsEl.innerHTML = '';
   for (const [id, entry] of calls) {
     const name = friendName(id);
     const div = document.createElement('div');
     div.className = 'participant' + (entry.audioEl ? '' : ' dialing');
-    div.innerHTML = `${avatarHtml(id, name)}<span class="pname">${escapeHtml(name)}</span>`;
+    div.innerHTML = `
+      ${avatarHtml(id, name)}
+      <span class="pname">${escapeHtml(name)}</span>
+      ${entry.audioEl
+        ? '<button class="volumeBtn ghost" title="Volume"></button>'
+        : '<span class="pname" style="color:var(--text-muted)">connecting…</span>'}`;
+    if (entry.audioEl) {
+      const volumeBtn = div.querySelector('.volumeBtn');
+      updateVolumeIcon(volumeBtn, entry.audioEl.volume);
+      volumeBtn.addEventListener('click', () => toggleVolumePopover(id, entry.audioEl, volumeBtn));
+    }
     callParticipantsEl.appendChild(div);
   }
 
@@ -295,6 +313,80 @@ function renderCallPanel() {
   chatPanelEl.hidden = calls.size === 0;
   if (wasVisible && chatPanelEl.hidden) chatMessagesEl.innerHTML = ''; // chat ends with the call
 }
+
+// --- per-participant volume popover -------------------------------
+
+let openVolumePopoverId = null;
+
+function updateVolumeIcon(btn, volume) {
+  btn.innerHTML = volume === 0 ? ICONS.volumeMute : volume < 0.5 ? ICONS.volumeLow : ICONS.volumeHigh;
+}
+
+function styleSliderFill(slider) {
+  const pct = slider.value;
+  slider.style.background = `linear-gradient(to right, var(--accent) ${pct}%, var(--bg-elev-2) ${pct}%)`;
+}
+
+function closeVolumePopover() {
+  if (!openVolumePopoverId) return;
+  openVolumePopoverId = null;
+  volumePopoverEl.hidden = true;
+  volumePopoverEl.innerHTML = '';
+}
+
+function toggleVolumePopover(id, audioEl, anchorEl) {
+  if (openVolumePopoverId === id) { closeVolumePopover(); return; }
+  closeVolumePopover();
+  openVolumePopoverId = id;
+
+  const pct = Math.round(audioEl.volume * 100);
+  volumePopoverEl.innerHTML = `
+    <div class="volumePopoverTop">
+      <button class="volumePopoverIcon ghost" title="Mute"></button>
+      <span class="volumePct">${pct}%</span>
+    </div>
+    <input type="range" class="volumePopoverSlider" min="0" max="100" value="${pct}">`;
+
+  const slider = volumePopoverEl.querySelector('.volumePopoverSlider');
+  const pctLabel = volumePopoverEl.querySelector('.volumePct');
+  const iconBtn = volumePopoverEl.querySelector('.volumePopoverIcon');
+  updateVolumeIcon(iconBtn, audioEl.volume);
+  styleSliderFill(slider);
+
+  slider.addEventListener('input', () => {
+    audioEl.volume = slider.value / 100;
+    pctLabel.textContent = `${slider.value}%`;
+    updateVolumeIcon(iconBtn, audioEl.volume);
+    updateVolumeIcon(anchorEl, audioEl.volume);
+    styleSliderFill(slider);
+  });
+
+  iconBtn.addEventListener('click', () => {
+    if (audioEl.volume > 0) {
+      audioEl.dataset.lastVolume = audioEl.volume;
+      audioEl.volume = 0;
+    } else {
+      audioEl.volume = Number(audioEl.dataset.lastVolume) || 1;
+    }
+    slider.value = Math.round(audioEl.volume * 100);
+    pctLabel.textContent = `${slider.value}%`;
+    updateVolumeIcon(iconBtn, audioEl.volume);
+    updateVolumeIcon(anchorEl, audioEl.volume);
+    styleSliderFill(slider);
+  });
+
+  const rect = anchorEl.getBoundingClientRect();
+  volumePopoverEl.hidden = false;
+  const popRect = volumePopoverEl.getBoundingClientRect();
+  volumePopoverEl.style.left = `${Math.round(rect.left + rect.width / 2 - popRect.width / 2)}px`;
+  volumePopoverEl.style.top = `${Math.round(rect.bottom + 8)}px`;
+}
+
+document.addEventListener('click', (e) => {
+  if (!openVolumePopoverId) return;
+  if (volumePopoverEl.contains(e.target) || e.target.closest('.volumeBtn')) return;
+  closeVolumePopover();
+});
 
 function attachRemoteStream(peerId, stream) {
   const audio = new Audio();
@@ -567,16 +659,34 @@ async function requestMic() {
   try {
     // WebView2's built-in WebRTC audio processing handles all of this natively —
     // no extra library needed.
+    const wantNS = getNoiseSuppressionEnabled();
     localStream = await navigator.mediaDevices.getUserMedia({
-      audio: { noiseSuppression: getNoiseSuppressionEnabled(), echoCancellation: true, autoGainControl: true },
+      // voiceIsolation is a newer, much stronger ML-based noise/background suppression
+      // feature on top of the classic noiseSuppression flag — request both.
+      audio: { noiseSuppression: wantNS, voiceIsolation: wantNS, echoCancellation: true, autoGainControl: true },
       video: false,
     });
+    const settings = localStream.getAudioTracks()[0]?.getSettings();
+    log(`mic settings: ${JSON.stringify(settings)}`);
     return true;
   } catch (err) {
     toast(`Microphone access failed: ${err.message} — check your mic is connected and restart patycord`);
     myIdEl.textContent = 'mic access needed';
     return false;
   }
+}
+
+// PeerJS doesn't retry on its own after losing the signaling connection — we have
+// to call reconnect() ourselves. Back off a bit on repeated failures so a prolonged
+// outage doesn't hammer the broker.
+function scheduleReconnect() {
+  if (reconnectTimer) return; // already have one pending
+  const delay = Math.min(3000 * 2 ** reconnectAttempts, 30000);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    reconnectAttempts++;
+    if (peer && !peer.destroyed) peer.reconnect();
+  }, delay);
 }
 
 async function main() {
@@ -591,7 +701,8 @@ async function main() {
     log('ready — press Call next to a friend to connect');
     renderPeerList();
     probeAllFriends();
-    setInterval(probeAllFriends, 10000);
+    reconnectAttempts = 0; // a successful (re)connect resets the backoff
+    if (!presenceProbeInterval) presenceProbeInterval = setInterval(probeAllFriends, 10000);
   });
 
   peer.on('call', (call) => {
@@ -625,7 +736,10 @@ async function main() {
     }
     toast(`Connection error: ${err.message || err}`);
   });
-  peer.on('disconnected', () => toast('Lost connection to the signaling server, reconnecting…', 'info'));
+  peer.on('disconnected', () => {
+    toast('Lost connection to the signaling server, reconnecting…', 'info');
+    scheduleReconnect();
+  });
 
   callBtn.addEventListener('click', () => {
     const id = peerIdInput.value.trim();
