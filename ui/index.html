@@ -234,10 +234,39 @@
   #status { font-size: 11.5px; color: var(--text-muted); white-space: pre-wrap; font-family: ui-monospace, monospace; }
 
   .callParticipants { display: flex; flex-wrap: wrap; gap: 16px; padding-bottom: 6px; }
-  .participant { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 76px; }
+  .participant { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 88px; }
   .participant .avatar { width: 54px; height: 54px; font-size: 17px; }
   .participant.dialing .avatar { opacity: 0.45; }
   .participant .pname { font-size: 11.5px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
+  .volumeBtn {
+    width: 26px; height: 26px; border-radius: 50%; padding: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .volumeBtn svg { width: 14px; height: 14px; }
+  .volumeBtn:hover { background: var(--bg-elev-2); color: var(--text); }
+
+  #volumePopover[hidden] { display: none; }
+  #volumePopover {
+    position: fixed; z-index: 250; width: 170px; box-sizing: border-box;
+    background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    display: flex; flex-direction: column; gap: 8px;
+    animation: toast-in 0.12s ease-out;
+  }
+  .volumePopoverTop { display: flex; align-items: center; justify-content: space-between; width: 100%; }
+  .volumePopoverIcon { width: 26px; height: 26px; border-radius: 50%; padding: 0; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+  .volumePopoverIcon svg { width: 15px; height: 15px; }
+  .volumePopoverIcon:hover { background: var(--bg); color: var(--text); }
+  .volumePopoverSlider {
+    display: block; width: 100%; box-sizing: border-box; margin: 0;
+    -webkit-appearance: none; appearance: none; height: 4px; border-radius: 999px; cursor: pointer;
+  }
+  .volumePopoverSlider::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.5); cursor: pointer; margin-top: -5px;
+  }
+  .volumePct { font-size: 11px; color: var(--text-muted); }
+
   .emptyState { color: var(--text-muted); font-size: 13px; text-align: center; padding: 60px 20px; }
   .emptyState svg { width: 40px; height: 40px; margin-bottom: 10px; opacity: 0.5; }
 
@@ -305,6 +334,7 @@
   </div>
 
   <div id="toasts"></div>
+  <div id="volumePopover" hidden></div>
 
   <div class="app">
     <aside class="sidebar">
