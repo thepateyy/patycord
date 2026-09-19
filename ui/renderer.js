@@ -56,10 +56,12 @@ const pendingFriendRequests = new Map(); // peerId -> name, awaiting Accept/Decl
 
 // Peer IDs and call metadata come from whoever is calling us — including strangers,
 // not just saved friends — so they must never go into innerHTML unescaped.
+// One reusable scratch element rather than a fresh document.createElement() on
+// every call — this runs for every name/tag/message in every single render.
+const escapeHtmlScratch = document.createElement('div');
 function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = String(str);
-  return div.innerHTML;
+  escapeHtmlScratch.textContent = String(str);
+  return escapeHtmlScratch.innerHTML;
 }
 
 // --- avatars -----------------------------------------------------------
@@ -346,6 +348,19 @@ function renderPendingList() {
     li.querySelector('.removeBtn').addEventListener('click', () => removeFriend(friend.id));
     pendingListEl.appendChild(li);
   }
+}
+
+// A presence sweep (probeAllFriends) settles up to one probe per friend within
+// milliseconds of each other — calling renderPeerList() straight from each one
+// would tear down and rebuild the whole list once per friend instead of once
+// per sweep. This collapses a burst of settlements into a single render.
+let renderPeerListTimer = null;
+function scheduleRenderPeerList() {
+  if (renderPeerListTimer) return;
+  renderPeerListTimer = setTimeout(() => {
+    renderPeerListTimer = null;
+    renderPeerList();
+  }, 50);
 }
 
 function renderPeerList() {
@@ -701,7 +716,7 @@ function probePresence(id) {
     if (settled) return;
     settled = true;
     presence.set(id, online);
-    renderPeerList();
+    scheduleRenderPeerList();
     try { probe.close(); } catch {}
   };
   const timer = setTimeout(() => finish(false), 4000);
