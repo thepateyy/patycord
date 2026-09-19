@@ -230,6 +230,7 @@ function learnName(id, name) {
 
 function removeFriend(id) {
   saveFriends(loadFriends().filter((f) => f.id !== id));
+  presence.delete(id); // only ever meaningful for someone on the friends list
   renderPeerList();
 }
 
@@ -817,6 +818,7 @@ function addScreenTile(peerId, call) {
 function removeScreenTile(peerId) {
   const entry = screenTiles.get(peerId);
   if (!entry) return;
+  entry.call.close(); // no-op if it's already closing/closed — this is often called from that path
   entry.tileEl.remove();
   screenTiles.delete(peerId);
 }
