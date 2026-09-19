@@ -39,6 +39,7 @@ const volumePopoverEl = document.getElementById('volumePopover');
 const updateBannerEl = document.getElementById('updateBanner');
 const updateBannerTextEl = document.getElementById('updateBannerText');
 const updateBannerBtn = document.getElementById('updateBannerBtn');
+const appVersionEl = document.getElementById('appVersion');
 
 let localStream = null; // raw mic capture — mute toggles this track's .enabled
 let processedStream = null; // what actually goes out over WebRTC (RNNoise'd, if available)
@@ -1148,6 +1149,8 @@ settingsBtn.addEventListener('click', () => {
   settingsNameInput.value = getMyUsername();
   noiseSuppressionToggle.checked = getNoiseSuppressionEnabled();
   settingsModal.hidden = false;
+  appVersionEl.textContent = '';
+  window.__TAURI__?.app.getVersion().then((v) => { appVersionEl.textContent = `patycord v${v}`; });
 });
 closeSettingsBtn.addEventListener('click', () => { settingsModal.hidden = true; });
 noiseSuppressionToggle.addEventListener('change', () => {
