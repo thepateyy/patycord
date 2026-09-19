@@ -321,7 +321,7 @@ function renderPendingList() {
   pendingCardEl.hidden = pending.length === 0;
   pendingListEl.innerHTML = '';
   for (const friend of pending) {
-    const name = friendName(friend.id);
+    const name = nameFor(friend);
     const li = document.createElement('li');
     li.className = 'friendRow';
     li.innerHTML = `
@@ -357,7 +357,7 @@ function renderPeerList() {
     const inCall = calls.has(friend.id);
     const connected = !!calls.get(friend.id)?.audioEl; // stream actually flowing, not just dialing
     const isOnline = connected || presence.get(friend.id);
-    const name = friendName(friend.id);
+    const name = nameFor(friend);
     const li = document.createElement('li');
     li.className = 'friendRow';
     li.innerHTML = `
@@ -641,9 +641,15 @@ function handleDataMessage(fromId, msg) {
   if (msg.type === 'hello') {
     learnName(fromId, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
   } else if (msg.type === 'roster') {
-    for (const id of msg.peers) meshCall(id);
+    // A connected peer controls this list — validate before trusting it, and cap
+    // it so a misbehaving/malicious one can't fan us out into countless outbound calls.
+    if (Array.isArray(msg.peers)) {
+      for (const id of msg.peers.slice(0, 50)) {
+        if (typeof id === 'string') meshCall(id);
+      }
+    }
   } else if (msg.type === 'peer-joined') {
-    log(`${friendName(msg.id)} is joining the call`);
+    if (typeof msg.id === 'string') log(`${friendName(msg.id)} is joining the call`);
   } else if (msg.type === 'chat') {
     if (!calls.has(fromId)) return; // only from people actually in the call with us
     appendChatMessage(fromId, typeof msg.text === 'string' ? msg.text.slice(0, 2000) : '');
@@ -698,6 +704,13 @@ function probePresence(id) {
 
 function probeAllFriends() {
   for (const friend of acceptedFriends()) probePresence(friend.id);
+}
+
+// Like friendName(id), but for call sites that already have the friend record in
+// hand (e.g. mid-loop over loadFriends()) — skips redoing the full reload+scan
+// friendName() would otherwise repeat for every single row.
+function nameFor(friend) {
+  return remoteNames.get(friend.id) || friend.name || 'Unknown';
 }
 
 function friendName(id) {
