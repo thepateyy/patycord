@@ -36,6 +36,9 @@ const chatMessagesEl = document.getElementById('chatMessages');
 const chatInputEl = document.getElementById('chatInput');
 const chatSendBtn = document.getElementById('chatSendBtn');
 const volumePopoverEl = document.getElementById('volumePopover');
+const updateBannerEl = document.getElementById('updateBanner');
+const updateBannerTextEl = document.getElementById('updateBannerText');
+const updateBannerBtn = document.getElementById('updateBannerBtn');
 
 let localStream = null; // raw mic capture — mute toggles this track's .enabled
 let processedStream = null; // what actually goes out over WebRTC (RNNoise'd, if available)
@@ -1194,7 +1197,39 @@ shareScreenBtn.innerHTML = ICONS.monitor;
 logToggleBtn.innerHTML = ICONS.list;
 settingsBtn.innerHTML = ICONS.gear;
 
+// --- auto-update -------------------------------------------------------
+// Checks GitHub Releases (via the endpoint in tauri.conf.json) for a newer
+// signed build. window.__TAURI__ only exists inside the actual Tauri app
+// (not when browser-testing via `npm run serve`), so this is a no-op there.
+async function checkForUpdates() {
+  const updater = window.__TAURI__?.updater;
+  if (!updater) return;
+  try {
+    const update = await updater.check();
+    if (!update) return;
+    updateBannerTextEl.textContent = `patycord ${update.version} is available (you're on ${update.currentVersion}).`;
+    updateBannerEl.hidden = false;
+    updateBannerBtn.addEventListener('click', async () => {
+      updateBannerBtn.disabled = true;
+      updateBannerBtn.textContent = 'Updating…';
+      try {
+        await update.downloadAndInstall();
+        await window.__TAURI__.process.relaunch();
+      } catch (err) {
+        toast(`Update failed: ${err.message || err}`);
+        updateBannerBtn.disabled = false;
+        updateBannerBtn.textContent = 'Update & restart';
+      }
+    }, { once: true });
+  } catch (err) {
+    // Quiet — a failed update check (offline, GitHub down, etc.) is never
+    // worth interrupting the user over. It'll just try again next launch.
+    log(`update check failed: ${err.message || err}`);
+  }
+}
+
 if (getMyUsername()) setMyUsername(getMyUsername());
 saveFriends(loadFriends()); // persist the cleanup of any bad entries from past bugs
 renderPeerList();
 main();
+checkForUpdates();
