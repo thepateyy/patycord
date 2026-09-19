@@ -39,6 +39,7 @@ const volumePopoverEl = document.getElementById('volumePopover');
 const updateBannerEl = document.getElementById('updateBanner');
 const updateBannerTextEl = document.getElementById('updateBannerText');
 const updateBannerBtn = document.getElementById('updateBannerBtn');
+const updateBannerNotesEl = document.getElementById('updateBannerNotes');
 const appVersionEl = document.getElementById('appVersion');
 
 let localStream = null; // raw mic capture — mute toggles this track's .enabled
@@ -1211,6 +1212,14 @@ async function checkForUpdates() {
     const update = await updater.check();
     if (!update) return;
     updateBannerTextEl.textContent = `patycord ${update.version} is available (you're on ${update.currentVersion}).`;
+    // update.body is the GitHub Release's notes (plain text, set via `.textContent`
+    // rather than innerHTML — it's remote content, never worth trusting as markup).
+    if (update.body && update.body.trim()) {
+      updateBannerNotesEl.textContent = update.body.trim();
+      updateBannerNotesEl.hidden = false;
+    } else {
+      updateBannerNotesEl.hidden = true;
+    }
     updateBannerEl.hidden = false;
     updateBannerBtn.addEventListener('click', async () => {
       updateBannerBtn.disabled = true;
