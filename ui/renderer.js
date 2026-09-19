@@ -15,6 +15,8 @@ const peerIdInput = document.getElementById('peerIdInput');
 const callBtn = document.getElementById('callBtn');
 const peerListEl = document.getElementById('peerList');
 const peerCountEl = document.getElementById('peerCount');
+const pendingCardEl = document.getElementById('pendingCard');
+const pendingListEl = document.getElementById('pendingList');
 const muteBtn = document.getElementById('muteBtn');
 const shareScreenBtn = document.getElementById('shareScreenBtn');
 const logToggleBtn = document.getElementById('logToggleBtn');
@@ -181,10 +183,32 @@ function saveFriends(friends) {
   localStorage.setItem('patycord.friends', JSON.stringify(friends));
 }
 
-function addFriend(id) {
+// Entries saved before the pending/accepted split have no `status` field —
+// treat that as 'accepted' so existing friends don't vanish.
+function acceptedFriends() {
+  return loadFriends().filter((f) => f.status !== 'pending');
+}
+
+function pendingOutgoingFriends() {
+  return loadFriends().filter((f) => f.status === 'pending');
+}
+
+// status 'pending' is a request we sent that hasn't been accepted yet — it shows
+// in the sidebar's separate Pending list, not the real Friends list. Calling this
+// again with 'accepted' on an existing pending entry promotes it once the other
+// side accepts.
+function addFriend(id, status = 'accepted') {
   const friends = loadFriends();
-  if (friends.some((f) => f.id === id)) return;
-  friends.push({ id, name: remoteNames.get(id) || null });
+  const existing = friends.find((f) => f.id === id);
+  if (existing) {
+    if (status === 'accepted' && existing.status === 'pending') {
+      existing.status = 'accepted';
+      saveFriends(friends);
+      renderPeerList();
+    }
+    return;
+  }
+  friends.push({ id, name: remoteNames.get(id) || null, status });
   saveFriends(friends);
   renderPeerList();
 }
@@ -206,6 +230,18 @@ function learnName(id, name) {
 
 function removeFriend(id) {
   saveFriends(loadFriends().filter((f) => f.id !== id));
+  renderPeerList();
+}
+
+// The other side declined an outgoing request of ours — drop our pending
+// entry for them. Guarded to a pending entry specifically so a stray/late
+// decline can't rip out an already-accepted friend.
+function handleFriendDecline(id) {
+  const friends = loadFriends();
+  const friend = friends.find((f) => f.id === id);
+  if (!friend || friend.status !== 'pending') return;
+  toast(`${friendName(id)} declined your friend request`, 'info');
+  saveFriends(friends.filter((f) => f.id !== id));
   renderPeerList();
 }
 
@@ -277,8 +313,36 @@ function toast(msg, type = 'error') {
   setTimeout(() => el.remove(), 5000);
 }
 
+// Outgoing friend requests we've sent that the other side hasn't accepted
+// (or declined) yet — kept separate from the real Friends list below.
+function renderPendingList() {
+  const pending = pendingOutgoingFriends();
+  pendingCardEl.hidden = pending.length === 0;
+  pendingListEl.innerHTML = '';
+  for (const friend of pending) {
+    const name = friendName(friend.id);
+    const li = document.createElement('li');
+    li.className = 'friendRow';
+    li.innerHTML = `
+      <span class="who">
+        <span class="avatarWrap">${avatarHtml(friend.id, name)}</span>
+        <span class="who-text">
+          <span class="name">${escapeHtml(name)}</span>
+          ${tagHtml(friend.id, name)}
+        </span>
+      </span>
+      <span class="actions">
+        <span class="pendingLabel">Waiting…</span>
+        <button class="removeBtn ghost" title="Cancel request">×</button>
+      </span>`;
+    li.querySelector('.removeBtn').addEventListener('click', () => removeFriend(friend.id));
+    pendingListEl.appendChild(li);
+  }
+}
+
 function renderPeerList() {
-  const friends = loadFriends();
+  renderPendingList();
+  const friends = acceptedFriends();
   peerListEl.innerHTML = '';
 
   if (friends.length === 0 && calls.size === 0) {
@@ -585,7 +649,10 @@ function handleDataMessage(fromId, msg) {
   } else if (msg.type === 'friend-request') {
     handleFriendRequest(fromId, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
   } else if (msg.type === 'friend-accept') {
+    addFriend(fromId, 'accepted'); // promotes our pending entry for them, if any
     toast(`${friendName(fromId)} accepted your friend request`, 'info');
+  } else if (msg.type === 'friend-decline') {
+    handleFriendDecline(fromId);
   }
 }
 
@@ -629,7 +696,7 @@ function probePresence(id) {
 }
 
 function probeAllFriends() {
-  for (const friend of loadFriends()) probePresence(friend.id);
+  for (const friend of acceptedFriends()) probePresence(friend.id);
 }
 
 function friendName(id) {
@@ -674,7 +741,16 @@ function renderIncomingCalls() {
 // --- friend requests -------------------------------------------------
 
 function handleFriendRequest(fromId, name) {
-  if (loadFriends().some((f) => f.id === fromId)) return; // already friends, nothing to do
+  const existing = loadFriends().find((f) => f.id === fromId);
+  if (existing?.status === 'accepted') return; // already friends, nothing to do
+  if (existing?.status === 'pending') {
+    // We'd also sent *them* a request (added each other around the same time) —
+    // no need to make either side click Accept, just treat it as mutual.
+    addFriend(fromId, 'accepted');
+    dataConnections.get(fromId)?.send({ type: 'friend-accept' });
+    toast(`You and ${name || 'them'} added each other — now friends`, 'info');
+    return;
+  }
   if (pendingFriendRequests.has(fromId)) return; // already showing one from them
   pendingFriendRequests.set(fromId, name);
   renderFriendRequests(); // the banner itself is the notice — no need for a toast too
@@ -707,6 +783,7 @@ function renderFriendRequests() {
     });
     div.querySelector('.declineBtn').addEventListener('click', () => {
       pendingFriendRequests.delete(id);
+      dataConnections.get(id)?.send({ type: 'friend-decline' });
       renderFriendRequests();
     });
     friendRequestsEl.appendChild(div);
@@ -881,10 +958,10 @@ async function main() {
   callBtn.addEventListener('click', () => {
     const id = peerIdInput.value.trim();
     if (!id || id === peer.id) return;
-    addFriend(id);
+    addFriend(id, 'pending');
     sendFriendRequest(id);
     peerIdInput.value = '';
-    log(`added ${friendName(id)} — press Call to connect`);
+    log(`friend request sent to ${friendName(id)}`);
   });
 
   peerIdInput.addEventListener('keydown', (e) => {

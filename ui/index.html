@@ -130,6 +130,7 @@
   .dot.online { background: var(--success); box-shadow: 0 0 0 2.5px var(--bg-elev), 0 0 6px 1px rgba(47,182,115,0.6); }
 
   .removeBtn { padding: 4px 8px; font-size: 15px; line-height: 1; flex-shrink: 0; }
+  .pendingLabel { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
   .callToggleBtn {
     width: 28px; height: 28px; border-radius: 50%; padding: 0; flex-shrink: 0;
     display: flex; align-items: center; justify-content: center;
@@ -365,6 +366,11 @@
           <input type="text" id="peerIdInput" placeholder="their ID">
           <button id="callBtn">Add</button>
         </div>
+      </div>
+
+      <div class="card friendsCard" id="pendingCard" hidden>
+        <label>Pending</label>
+        <ul id="pendingList"></ul>
       </div>
 
       <div class="card friendsCard">
