@@ -173,13 +173,20 @@
   #updateBanner {
     position: fixed; top: 0; left: 0; right: 0; z-index: 200;
     background: var(--accent); color: #fff; font-size: 13px;
-    padding: 8px 14px; display: flex; align-items: center; justify-content: center; gap: 10px;
+    padding: 8px 14px; display: flex; flex-direction: column;
     box-shadow: 0 2px 10px rgba(0,0,0,0.35);
   }
   #updateBanner[hidden] { display: none; } /* the class's own display: flex above would otherwise beat the attribute */
+  .updateBannerTop { display: flex; align-items: center; justify-content: center; gap: 10px; }
   #updateBanner button { background: rgba(255,255,255,0.18); }
   #updateBanner button:hover { background: rgba(255,255,255,0.28); }
   #updateBanner button:disabled { opacity: 0.6; }
+  .updateBannerNotes {
+    margin: 8px auto 0; max-width: 560px; max-height: 120px; overflow-y: auto;
+    background: rgba(0,0,0,0.15); border-radius: var(--radius-sm); padding: 8px 10px;
+    font-size: 12px; white-space: pre-wrap; text-align: left;
+  }
+  .updateBannerNotes[hidden] { display: none; }
 
   #screenGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-bottom: 12px; }
   .screenTile { position: relative; background: #000; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border); }
@@ -361,8 +368,11 @@
   <div id="toasts"></div>
   <div id="volumePopover" hidden></div>
   <div id="updateBanner" hidden>
-    <span id="updateBannerText">A new version of patycord is available.</span>
-    <button id="updateBannerBtn">Update &amp; restart</button>
+    <div class="updateBannerTop">
+      <span id="updateBannerText">A new version of patycord is available.</span>
+      <button id="updateBannerBtn">Update &amp; restart</button>
+    </div>
+    <div id="updateBannerNotes" class="updateBannerNotes" hidden></div>
   </div>
 
   <div class="app">
