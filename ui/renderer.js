@@ -209,6 +209,40 @@ function removeFriend(id) {
   renderPeerList();
 }
 
+// --- UI sounds -------------------------------------------------------
+// Short synthesized blips for action feedback — no audio files to ship,
+// just a couple of oscillator tones with a quick fade so they don't click.
+
+let uiSoundCtx = null;
+function playTone(freq, durationMs, { type = 'sine', gain = 0.15, delayMs = 0 } = {}) {
+  try {
+    if (!uiSoundCtx) uiSoundCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (uiSoundCtx.state === 'suspended') uiSoundCtx.resume();
+    const start = uiSoundCtx.currentTime + delayMs / 1000;
+    const osc = uiSoundCtx.createOscillator();
+    const env = uiSoundCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, start);
+    env.gain.setValueAtTime(0, start);
+    env.gain.linearRampToValueAtTime(gain, start + 0.008); // quick fade in, avoids a click
+    env.gain.exponentialRampToValueAtTime(0.0001, start + durationMs / 1000);
+    osc.connect(env).connect(uiSoundCtx.destination);
+    osc.start(start);
+    osc.stop(start + durationMs / 1000 + 0.02);
+  } catch {} // sound is a nicety, never worth breaking the app over
+}
+
+function playMuteSound(isMuted) {
+  // Muting steps down in pitch, unmuting steps up — same shape Discord/Zoom use.
+  if (isMuted) playTone(600, 90);
+  else { playTone(440, 70); playTone(660, 90, { delayMs: 70 }); }
+}
+
+function playScreenShareSound(isSharing) {
+  if (isSharing) { playTone(520, 80); playTone(780, 120, { delayMs: 80 }); }
+  else playTone(400, 100);
+}
+
 // --- UI ------------------------------------------------------------
 
 function log(msg) {
@@ -721,6 +755,7 @@ async function startScreenShare() {
 
   shareScreenBtn.title = 'Stop sharing';
   shareScreenBtn.classList.add('sharing');
+  playScreenShareSound(true);
   log('sharing your screen');
 }
 
@@ -733,6 +768,7 @@ function stopScreenShare() {
   outgoingScreenCalls.clear();
   shareScreenBtn.title = 'Share screen';
   shareScreenBtn.classList.remove('sharing');
+  playScreenShareSound(false);
   log('stopped sharing your screen');
 }
 
@@ -874,6 +910,7 @@ muteBtn.addEventListener('click', () => {
   muteBtn.title = muted ? 'Unmute' : 'Mute';
   muteBtn.classList.toggle('active', muted);
   muteBtn.innerHTML = muted ? ICONS.micOff : ICONS.mic;
+  playMuteSound(muted);
 });
 
 shareScreenBtn.addEventListener('click', () => {
