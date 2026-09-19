@@ -1,4 +1,5 @@
 import createRNNWasmModule from './rnnoise.js';
+import { t, getLanguage, setLanguage, applyStaticTranslations, LANGUAGES } from './i18n.js';
 
 const myIdEl = document.getElementById('myId');
 const myNameEl = document.getElementById('myName');
@@ -9,6 +10,7 @@ const closeSettingsBtn = document.getElementById('closeSettingsBtn');
 const settingsNameInput = document.getElementById('settingsNameInput');
 const settingsSaveNameBtn = document.getElementById('settingsSaveNameBtn');
 const noiseSuppressionToggle = document.getElementById('noiseSuppressionToggle');
+const languageSelectEl = document.getElementById('languageSelect');
 const usernameModal = document.getElementById('usernameModal');
 const usernameInput = document.getElementById('usernameInput');
 const usernameSaveBtn = document.getElementById('usernameSaveBtn');
@@ -16,7 +18,7 @@ const copyBtn = document.getElementById('copyBtn');
 const peerIdInput = document.getElementById('peerIdInput');
 const callBtn = document.getElementById('callBtn');
 const peerListEl = document.getElementById('peerList');
-const peerCountEl = document.getElementById('peerCount');
+const friendsCountLabelEl = document.getElementById('friendsCountLabel');
 const pendingCardEl = document.getElementById('pendingCard');
 const pendingListEl = document.getElementById('pendingList');
 const muteBtn = document.getElementById('muteBtn');
@@ -48,6 +50,8 @@ let muted = false;
 let peer = null;
 let screenStream = null;
 let presenceProbeInterval = null;
+let currentUpdate = null; // the Update object once checkForUpdates() finds one, so a language switch can re-render its (version-specific) banner text correctly instead of clobbering it back to the generic placeholder
+let micAccessFailed = false; // so a language switch can keep showing the right message instead of "connecting…"
 let reconnectTimer = null;
 let reconnectAttempts = 0;
 const calls = new Map(); // peerId -> { call, audioEl }
@@ -97,12 +101,12 @@ function avatarHtml(id, name, extraClass = '') {
 // clipboard, so nobody ever has to read or retype the ugly part.
 function tagFor(id, name) {
   const suffix = id.slice(-4).toUpperCase();
-  return `${name || 'Anonymous'}#${suffix}`;
+  return `${name || t('anonymous')}#${suffix}`;
 }
 
 function tagHtml(id, name) {
   const suffix = id.slice(-4).toUpperCase();
-  return `<span class="tag"><span class="tagName">${escapeHtml(name || 'Anonymous')}</span><span class="tagHash">#${escapeHtml(suffix)}</span></span>`;
+  return `<span class="tag"><span class="tagName">${escapeHtml(name || t('anonymous'))}</span><span class="tagHash">#${escapeHtml(suffix)}</span></span>`;
 }
 
 // --- icons (inline SVG, no icon font/library needed) --------------------
@@ -255,7 +259,7 @@ function handleFriendDecline(id) {
   const friends = loadFriends();
   const friend = friends.find((f) => f.id === id);
   if (!friend || friend.status !== 'pending') return;
-  toast(`${friendName(id)} declined your friend request`, 'info');
+  toast(t('toast.friendDeclined', { name: friendName(id) }), 'info');
   saveFriends(friends.filter((f) => f.id !== id));
   renderPeerList();
 }
@@ -347,8 +351,8 @@ function renderPendingList() {
         </span>
       </span>
       <span class="actions">
-        <span class="pendingLabel">Waiting…</span>
-        <button class="removeBtn ghost" title="Cancel request">×</button>
+        <span class="pendingLabel">${t('sidebar.waiting')}</span>
+        <button class="removeBtn ghost" title="${t('sidebar.cancelRequest')}">×</button>
       </span>`;
     li.querySelector('.removeBtn').addEventListener('click', () => removeFriend(friend.id));
     pendingListEl.appendChild(li);
@@ -376,7 +380,7 @@ function renderPeerList() {
   if (friends.length === 0 && calls.size === 0) {
     const li = document.createElement('li');
     li.className = 'empty';
-    li.textContent = 'No friends added yet — add one above.';
+    li.textContent = t('sidebar.noFriends');
     peerListEl.appendChild(li);
   }
 
@@ -399,8 +403,8 @@ function renderPeerList() {
         </span>
       </span>
       <span class="actions">
-        ${inCall || isOnline ? `<button class="callToggleBtn ${inCall ? 'hangupBtn' : 'callBtnIcon'}" title="${inCall ? (connected ? 'Hang up' : 'Cancel') : 'Call'}"></button>` : ''}
-        <button class="removeBtn ghost" title="Remove">×</button>
+        ${inCall || isOnline ? `<button class="callToggleBtn ${inCall ? 'hangupBtn' : 'callBtnIcon'}" title="${inCall ? (connected ? t('sidebar.hangUp') : t('sidebar.cancel')) : t('sidebar.call')}"></button>` : ''}
+        <button class="removeBtn ghost" title="${t('sidebar.remove')}">×</button>
       </span>`;
     const callToggleBtn = li.querySelector('.callToggleBtn');
     if (callToggleBtn) {
@@ -431,7 +435,7 @@ function renderPeerList() {
         </span>
       </span>
       <span class="actions">
-        <button class="callToggleBtn hangupBtn" title="Hang up"></button>
+        <button class="callToggleBtn hangupBtn" title="${t('sidebar.hangUp')}"></button>
       </span>`;
     const hangupBtn = li.querySelector('.callToggleBtn');
     hangupBtn.innerHTML = ICONS.phoneOff;
@@ -439,7 +443,7 @@ function renderPeerList() {
     peerListEl.appendChild(li);
   }
 
-  peerCountEl.textContent = calls.size;
+  friendsCountLabelEl.textContent = t('sidebar.friends', { count: calls.size });
   renderCallPanel();
 }
 
@@ -457,8 +461,8 @@ function renderCallPanel() {
       ${avatarHtml(id, name)}
       <span class="pname">${escapeHtml(name)}</span>
       ${entry.audioEl
-        ? '<button class="volumeBtn ghost" title="Volume"></button>'
-        : '<span class="pname" style="color:var(--text-muted)">connecting…</span>'}`;
+        ? `<button class="volumeBtn ghost" title="${t('main.volume')}"></button>`
+        : `<span class="pname" style="color:var(--text-muted)">${t('main.connecting')}</span>`}`;
     if (entry.audioEl) {
       const volumeBtn = div.querySelector('.volumeBtn');
       updateVolumeIcon(volumeBtn, entry.audioEl.volume);
@@ -507,7 +511,7 @@ function toggleVolumePopover(id, audioEl, anchorEl) {
   const pct = Math.round(audioEl.volume * 100);
   volumePopoverEl.innerHTML = `
     <div class="volumePopoverTop">
-      <button class="volumePopoverIcon ghost" title="Mute"></button>
+      <button class="volumePopoverIcon ghost" title="${t('main.mute')}"></button>
       <span class="volumePct">${pct}%</span>
     </div>
     <input type="range" class="volumePopoverSlider" min="0" max="100" value="${pct}">`;
@@ -582,7 +586,7 @@ function removeCall(peerId) {
   }
   calls.delete(peerId);
   renderPeerList();
-  log(`disconnected from ${peerId}`);
+  log(t('log.disconnected', { id: peerId }));
 }
 
 function wireCall(call) {
@@ -593,7 +597,7 @@ function wireCall(call) {
 
   call.on('stream', (remoteStream) => attachRemoteStream(call.peer, remoteStream));
   call.on('close', () => removeCall(call.peer));
-  call.on('error', (err) => { toast(`Call with ${friendName(call.peer)} failed: ${err}`); removeCall(call.peer); });
+  call.on('error', (err) => { toast(t('toast.callFailed', { name: friendName(call.peer), error: err })); removeCall(call.peer); });
 }
 
 // Opens (if needed) the data connection used for roster exchange and chat with `id`.
@@ -676,7 +680,7 @@ function handleDataMessage(fromId, msg) {
       }
     }
   } else if (msg.type === 'peer-joined') {
-    if (typeof msg.id === 'string') log(`${friendName(msg.id)} is joining the call`);
+    if (typeof msg.id === 'string') log(t('log.joining', { name: friendName(msg.id) }));
   } else if (msg.type === 'chat') {
     if (!calls.has(fromId)) return; // only from people actually in the call with us
     appendChatMessage(fromId, typeof msg.text === 'string' ? msg.text.slice(0, 2000) : '');
@@ -684,7 +688,7 @@ function handleDataMessage(fromId, msg) {
     handleFriendRequest(fromId, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
   } else if (msg.type === 'friend-accept') {
     addFriend(fromId, 'accepted'); // promotes our pending entry for them, if any
-    toast(`${friendName(fromId)} accepted your friend request`, 'info');
+    toast(t('toast.friendAccepted', { name: friendName(fromId) }), 'info');
   } else if (msg.type === 'friend-decline') {
     handleFriendDecline(fromId);
   }
@@ -737,11 +741,11 @@ function probeAllFriends() {
 // hand (e.g. mid-loop over loadFriends()) — skips redoing the full reload+scan
 // friendName() would otherwise repeat for every single row.
 function nameFor(friend) {
-  return remoteNames.get(friend.id) || friend.name || 'Unknown';
+  return remoteNames.get(friend.id) || friend.name || t('unknown');
 }
 
 function friendName(id) {
-  return remoteNames.get(id) || loadFriends().find((f) => f.id === id)?.name || 'Unknown';
+  return remoteNames.get(id) || loadFriends().find((f) => f.id === id)?.name || t('unknown');
 }
 
 function renderIncomingCalls() {
@@ -756,13 +760,13 @@ function renderIncomingCalls() {
       <span class="who">
         ${avatarHtml(id, name)}
         <span class="who-text">
-          <span class="callLabel">Incoming call</span>
+          <span class="callLabel">${t('incomingCall.label')}</span>
           <span class="callName">${escapeHtml(name)}</span>
         </span>
       </span>
       <span class="actions">
-        <button class="acceptBtn">Accept</button>
-        <button class="declineBtn">Decline</button>
+        <button class="acceptBtn">${t('accept')}</button>
+        <button class="declineBtn">${t('decline')}</button>
       </span>`;
     div.querySelector('.acceptBtn').addEventListener('click', () => {
       pendingCalls.delete(id);
@@ -789,7 +793,7 @@ function handleFriendRequest(fromId, name) {
     // no need to make either side click Accept, just treat it as mutual.
     addFriend(fromId, 'accepted');
     dataConnections.get(fromId)?.send({ type: 'friend-accept' });
-    toast(`You and ${name || 'them'} added each other — now friends`, 'info');
+    toast(t('toast.mutualAdd', { name: name || t('them') }), 'info');
     return;
   }
   if (pendingFriendRequests.has(fromId)) return; // already showing one from them
@@ -806,20 +810,20 @@ function renderFriendRequests() {
       <span class="who">
         ${avatarHtml(id, name)}
         <span class="who-text">
-          <span class="callLabel">Friend request</span>
-          <span class="callName">${escapeHtml(name || 'Unknown')}</span>
+          <span class="callLabel">${t('friendRequest.label')}</span>
+          <span class="callName">${escapeHtml(name || t('unknown'))}</span>
         </span>
       </span>
       <span class="actions">
-        <button class="acceptBtn">Accept</button>
-        <button class="declineBtn">Decline</button>
+        <button class="acceptBtn">${t('accept')}</button>
+        <button class="declineBtn">${t('decline')}</button>
       </span>`;
     div.querySelector('.acceptBtn').addEventListener('click', () => {
       pendingFriendRequests.delete(id);
       learnName(id, name);
       addFriend(id);
       dataConnections.get(id)?.send({ type: 'friend-accept' });
-      toast(`Added ${name || 'them'} as a friend`, 'info');
+      toast(t('toast.addedFriend', { name: name || t('them') }), 'info');
       renderFriendRequests();
     });
     div.querySelector('.declineBtn').addEventListener('click', () => {
@@ -844,7 +848,7 @@ function addScreenTile(peerId, call) {
   // Not muted — if the sharer included system audio, we want to actually hear it.
   const label = document.createElement('div');
   label.className = 'label';
-  label.textContent = `${friendName(peerId)}'s screen`;
+  label.textContent = t('screen.label', { name: friendName(peerId) });
   tile.appendChild(video);
   tile.appendChild(label);
   screenGridEl.appendChild(tile);
@@ -870,7 +874,7 @@ function handleIncomingScreenShare(call) {
   if (!calls.has(call.peer)) { call.close(); return; }
   call.answer();
   addScreenTile(call.peer, call);
-  toast(`${friendName(call.peer)} started sharing their screen`, 'info');
+  toast(t('toast.screenShareStarted', { name: friendName(call.peer) }), 'info');
 }
 
 async function startScreenShare() {
@@ -880,7 +884,7 @@ async function startScreenShare() {
     // silently if the OS/selection doesn't support it, no error either way.
     screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
   } catch (err) {
-    toast(`Screen share failed: ${err.message}`);
+    toast(t('toast.screenShareFailed', { error: err.message }));
     return;
   }
   screenStream.getVideoTracks()[0].addEventListener('ended', stopScreenShare);
@@ -892,23 +896,23 @@ async function startScreenShare() {
     call.on('error', () => outgoingScreenCalls.delete(id));
   }
 
-  shareScreenBtn.title = 'Stop sharing';
+  shareScreenBtn.title = t('main.stopSharing');
   shareScreenBtn.classList.add('sharing');
   playScreenShareSound(true);
-  log('sharing your screen');
+  log(t('log.sharingScreen'));
 }
 
 function stopScreenShare() {
   if (screenStream) {
-    screenStream.getTracks().forEach((t) => t.stop());
+    screenStream.getTracks().forEach((track) => track.stop());
     screenStream = null;
   }
   for (const call of outgoingScreenCalls.values()) call.close();
   outgoingScreenCalls.clear();
-  shareScreenBtn.title = 'Share screen';
+  shareScreenBtn.title = t('main.shareScreen');
   shareScreenBtn.classList.remove('sharing');
   playScreenShareSound(false);
-  log('stopped sharing your screen');
+  log(t('log.stoppedSharing'));
 }
 
 // --- RNNoise (open-source ML noise suppression, runs locally, no account needed) ---
@@ -931,7 +935,7 @@ async function loadRNNoise() {
     rnnoiseInPtr = rnnoiseModule._malloc(bytes);
     rnnoiseOutPtr = rnnoiseModule._malloc(bytes);
   } catch (err) {
-    log(`RNNoise failed to load, falling back to built-in suppression: ${err.message}`);
+    log(t('log.rnnoiseFailed', { error: err.message }));
     rnnoiseModule = null;
   }
   return rnnoiseModule;
@@ -1040,22 +1044,24 @@ async function requestMic() {
       video: false,
     });
     const settings = localStream.getAudioTracks()[0]?.getSettings();
-    log(`mic settings: ${JSON.stringify(settings)}`);
+    log(t('log.micSettings', { json: JSON.stringify(settings) }));
 
     rnnoiseEnabled = getNoiseSuppressionEnabled();
     await loadRNNoise();
     if (rnnoiseModule) {
       localStream.getAudioTracks()[0].applyConstraints({ noiseSuppression: false, voiceIsolation: false }).catch(() => {});
       processedStream = buildProcessedStream(localStream);
-      log('noise suppression: RNNoise (local, open-source ML model)');
+      log(t('log.rnnoiseActive'));
     } else {
       processedStream = localStream;
     }
 
     return true;
   } catch (err) {
-    toast(`Microphone access failed: ${err.message} — check your mic is connected and restart patycord`);
-    myIdEl.textContent = 'mic access needed';
+    toast(t('toast.micFailed', { error: err.message }));
+    micAccessFailed = true;
+    myIdEl.textContent = t('myId.micNeeded');
+    myIdEl.removeAttribute('data-i18n'); // same reasoning as the peer.on('open') case above
     return false;
   }
 }
@@ -1082,7 +1088,8 @@ async function main() {
 
   peer.on('open', (id) => {
     myIdEl.innerHTML = tagHtml(id, getMyUsername());
-    log('ready — press Call next to a friend to connect');
+    myIdEl.removeAttribute('data-i18n'); // it's showing real content now — a static-translation sweep must never clobber it back to "connecting…"
+    log(t('log.ready'));
     renderPeerList();
     probeAllFriends();
     reconnectAttempts = 0; // a successful (re)connect resets the backoff
@@ -1096,7 +1103,7 @@ async function main() {
     }
     pendingCalls.set(call.peer, call);
     renderIncomingCalls();
-    log(`incoming call from ${friendName(call.peer)}`);
+    log(t('log.incomingCall', { name: friendName(call.peer) }));
     call.on('close', () => { pendingCalls.delete(call.peer); renderIncomingCalls(); });
   });
 
@@ -1112,16 +1119,16 @@ async function main() {
       if (id && calls.has(id) && !calls.get(id).audioEl) {
         presence.set(id, false);
         hangUp(id);
-        toast(`${friendName(id)} isn't online right now.`);
+        toast(t('toast.notOnline', { name: friendName(id) }));
       } else {
-        log(`peer error: ${err}`);
+        log(t('log.peerError', { error: err }));
       }
       return;
     }
-    toast(`Connection error: ${err.message || err}`);
+    toast(t('toast.connectionError', { error: err.message || err }));
   });
   peer.on('disconnected', () => {
-    toast('Lost connection to the signaling server, reconnecting…', 'info');
+    toast(t('toast.reconnecting'), 'info');
     scheduleReconnect();
   });
 
@@ -1131,7 +1138,7 @@ async function main() {
     addFriend(id, 'pending');
     sendFriendRequest(id);
     peerIdInput.value = '';
-    log(`friend request sent to ${friendName(id)}`);
+    log(t('log.friendRequestSent', { name: friendName(id) }));
   });
 
   peerIdInput.addEventListener('keydown', (e) => {
@@ -1142,8 +1149,8 @@ async function main() {
 copyBtn.addEventListener('click', () => {
   if (!peer) return;
   navigator.clipboard.writeText(peer.id); // the real connection ID, not the pretty tag shown on screen
-  copyBtn.textContent = 'Copied!';
-  setTimeout(() => (copyBtn.textContent = 'Copy'), 1200);
+  copyBtn.textContent = t('settings.copied');
+  setTimeout(() => (copyBtn.textContent = t('settings.copy')), 1200);
 });
 
 settingsBtn.addEventListener('click', () => {
@@ -1167,6 +1174,41 @@ settingsNameInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') settingsSaveNameBtn.click();
 });
 
+// --- language switching -------------------------------------------
+
+for (const [code, label] of Object.entries(LANGUAGES)) {
+  const opt = document.createElement('option');
+  opt.value = code;
+  opt.textContent = label;
+  languageSelectEl.appendChild(opt);
+}
+languageSelectEl.value = getLanguage();
+
+languageSelectEl.addEventListener('change', () => {
+  setLanguage(languageSelectEl.value);
+  applyLanguage();
+});
+
+// Re-applies every currently-visible piece of translated UI after a switch —
+// both the static, data-i18n-tagged markup and everything renderer.js
+// generates dynamically. A couple of spots hold JS-set content a blind
+// static sweep would otherwise wipe back to placeholder text (see the
+// data-i18n removal comments where they're first set) — those get
+// explicitly regenerated here instead.
+function applyLanguage() {
+  applyStaticTranslations();
+  if (peer) myIdEl.innerHTML = tagHtml(peer.id, getMyUsername());
+  else if (micAccessFailed) myIdEl.textContent = t('myId.micNeeded');
+  if (currentUpdate) {
+    updateBannerTextEl.textContent = t('update.available', { version: currentUpdate.version, current: currentUpdate.currentVersion });
+  }
+  muteBtn.title = muted ? t('main.unmute') : t('main.mute');
+  shareScreenBtn.title = screenStream ? t('main.stopSharing') : t('main.shareScreen');
+  renderPeerList();
+  renderIncomingCalls();
+  renderFriendRequests();
+}
+
 chatSendBtn.addEventListener('click', sendChatMessage);
 chatInputEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') sendChatMessage();
@@ -1175,8 +1217,8 @@ chatInputEl.addEventListener('keydown', (e) => {
 muteBtn.addEventListener('click', () => {
   if (!localStream) return;
   muted = !muted;
-  localStream.getAudioTracks().forEach((t) => (t.enabled = !muted));
-  muteBtn.title = muted ? 'Unmute' : 'Mute';
+  localStream.getAudioTracks().forEach((track) => (track.enabled = !muted));
+  muteBtn.title = muted ? t('main.unmute') : t('main.mute');
   muteBtn.classList.toggle('active', muted);
   muteBtn.innerHTML = muted ? ICONS.micOff : ICONS.mic;
   playMuteSound(muted);
@@ -1211,7 +1253,9 @@ async function checkForUpdates() {
   try {
     const update = await updater.check();
     if (!update) return;
-    updateBannerTextEl.textContent = `patycord ${update.version} is available (you're on ${update.currentVersion}).`;
+    currentUpdate = update;
+    updateBannerTextEl.textContent = t('update.available', { version: update.version, current: update.currentVersion });
+    updateBannerTextEl.removeAttribute('data-i18n'); // same reasoning as myIdEl above
     // update.body is the GitHub Release's notes (plain text, set via `.textContent`
     // rather than innerHTML — it's remote content, never worth trusting as markup).
     if (update.body && update.body.trim()) {
@@ -1223,23 +1267,24 @@ async function checkForUpdates() {
     updateBannerEl.hidden = false;
     updateBannerBtn.addEventListener('click', async () => {
       updateBannerBtn.disabled = true;
-      updateBannerBtn.textContent = 'Updating…';
+      updateBannerBtn.textContent = t('update.updating');
       try {
         await update.downloadAndInstall();
         await window.__TAURI__.process.relaunch();
       } catch (err) {
-        toast(`Update failed: ${err.message || err}`);
+        toast(t('update.failed', { error: err.message || err }));
         updateBannerBtn.disabled = false;
-        updateBannerBtn.textContent = 'Update & restart';
+        updateBannerBtn.textContent = t('update.button');
       }
     }, { once: true });
   } catch (err) {
     // Quiet — a failed update check (offline, GitHub down, etc.) is never
     // worth interrupting the user over. It'll just try again next launch.
-    log(`update check failed: ${err.message || err}`);
+    log(t('log.updateCheckFailed', { error: err.message || err }));
   }
 }
 
+applyStaticTranslations(); // before anything renders, including the username prompt modal
 if (getMyUsername()) setMyUsername(getMyUsername());
 saveFriends(loadFriends()); // persist the cleanup of any bad entries from past bugs
 renderPeerList();
