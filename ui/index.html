@@ -212,6 +212,7 @@
     display: flex; flex-direction: column; gap: 2px;
   }
   .switchLabel small { color: var(--text-muted); font-size: 11px; font-weight: 400; }
+  .appVersion { margin-top: 16px; text-align: center; font-size: 11px; color: var(--text-muted); }
 
   .switch { position: relative; display: inline-block; width: 40px; height: 23px; flex-shrink: 0; cursor: pointer; }
   .switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; z-index: 1; }
@@ -352,6 +353,8 @@
           <span class="switchTrack"><span class="switchKnob"></span></span>
         </label>
       </div>
+
+      <div id="appVersion" class="appVersion"></div>
     </div>
   </div>
 
