@@ -243,6 +243,24 @@ function playScreenShareSound(isSharing) {
   else playTone(400, 100);
 }
 
+// Repeating two-tone ring for as long as at least one call is waiting on us
+// to accept/decline — started/stopped from renderIncomingCalls, which already
+// runs on every change to pendingCalls.
+let ringInterval = null;
+function playRing() {
+  playTone(520, 260, { gain: 0.18 });
+  playTone(660, 260, { gain: 0.18, delayMs: 260 });
+}
+function startRinging() {
+  if (ringInterval) return;
+  playRing();
+  ringInterval = setInterval(playRing, 2000);
+}
+function stopRinging() {
+  clearInterval(ringInterval);
+  ringInterval = null;
+}
+
 // --- UI ------------------------------------------------------------
 
 function log(msg) {
@@ -619,6 +637,8 @@ function friendName(id) {
 }
 
 function renderIncomingCalls() {
+  if (pendingCalls.size > 0) startRinging();
+  else stopRinging();
   incomingCallsEl.innerHTML = '';
   for (const [id, call] of pendingCalls) {
     const name = friendName(id);
