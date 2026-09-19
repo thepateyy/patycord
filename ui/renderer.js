@@ -326,6 +326,13 @@ function renderCallPanel() {
   const wasVisible = !chatPanelEl.hidden;
   chatPanelEl.hidden = calls.size === 0;
   if (wasVisible && chatPanelEl.hidden) chatMessagesEl.innerHTML = ''; // chat ends with the call
+
+  // Mute/share are call-specific — hide them the rest of the time, and drop
+  // any in-progress screen share once there's no one left to send it to.
+  const inCall = calls.size > 0;
+  muteBtn.hidden = !inCall;
+  shareScreenBtn.hidden = !inCall;
+  if (!inCall && screenStream) stopScreenShare();
 }
 
 // --- per-participant volume popover -------------------------------
