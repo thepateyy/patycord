@@ -926,6 +926,35 @@ function processFrameRNNoise(frameIn, frameOut) {
   for (let i = 0; i < RNNOISE_FRAME_SIZE; i++) frameOut[i] = m.HEAPF32[rnnoiseOutPtr / 4 + i] / 32768;
 }
 
+// Fixed-capacity circular buffer of samples. The naive way to buffer a stream of
+// irregularly-sized chunks is "concat onto a growing array", which reallocates
+// and copies the whole thing on every single chunk — wasteful GC churn in an
+// audio callback that fires ten-plus times a second for as long as a call lasts.
+// This allocates once and never again.
+class RingBuffer {
+  constructor(capacity) {
+    this.buf = new Float32Array(capacity);
+    this.capacity = capacity;
+    this.readIdx = 0;
+    this.length = 0; // samples currently buffered
+  }
+  write(chunk) {
+    for (let i = 0; i < chunk.length; i++) {
+      this.buf[(this.readIdx + this.length) % this.capacity] = chunk[i];
+      this.length++;
+    }
+  }
+  // Fills `dest` (its full length) with the oldest buffered samples and removes
+  // them. Caller checks .length beforehand — this doesn't guard against underrun.
+  read(dest) {
+    for (let i = 0; i < dest.length; i++) {
+      dest[i] = this.buf[this.readIdx];
+      this.readIdx = (this.readIdx + 1) % this.capacity;
+    }
+    this.length -= dest.length;
+  }
+}
+
 // Runs the raw mic stream through RNNoise (when enabled) via a Web Audio graph and
 // returns a new MediaStream carrying the processed audio — this is what actually
 // goes out over WebRTC. Uses ScriptProcessorNode (deprecated but universally
@@ -937,17 +966,14 @@ function buildProcessedStream(rawStream) {
   const source = audioCtx.createMediaStreamSource(rawStream);
   const processor = audioCtx.createScriptProcessor(4096, 1, 1);
 
-  let inputRing = new Float32Array(0);
-  let outputRing = new Float32Array(0);
+  // 3x the callback size is comfortable headroom over the worst-case backlog
+  // (well under 2x in practice) with input/output running at the same rate —
+  // this is never expected to fill up, let alone overflow.
+  const RING_CAPACITY = 4096 * 3;
+  const inputRing = new RingBuffer(RING_CAPACITY);
+  const outputRing = new RingBuffer(RING_CAPACITY);
   const frameIn = new Float32Array(RNNOISE_FRAME_SIZE);
   const frameOut = new Float32Array(RNNOISE_FRAME_SIZE);
-
-  const appendToRing = (ring, chunk) => {
-    const combined = new Float32Array(ring.length + chunk.length);
-    combined.set(ring);
-    combined.set(chunk, ring.length);
-    return combined;
-  };
 
   processor.onaudioprocess = (e) => {
     const input = e.inputBuffer.getChannelData(0);
@@ -958,21 +984,22 @@ function buildProcessedStream(rawStream) {
       return;
     }
 
-    inputRing = appendToRing(inputRing, input);
+    inputRing.write(input);
     while (inputRing.length >= RNNOISE_FRAME_SIZE) {
-      frameIn.set(inputRing.subarray(0, RNNOISE_FRAME_SIZE));
-      inputRing = inputRing.subarray(RNNOISE_FRAME_SIZE);
+      inputRing.read(frameIn);
       processFrameRNNoise(frameIn, frameOut);
-      outputRing = appendToRing(outputRing, frameOut);
+      outputRing.write(frameOut);
     }
 
     if (outputRing.length >= output.length) {
-      output.set(outputRing.subarray(0, output.length));
-      outputRing = outputRing.subarray(output.length);
+      outputRing.read(output);
     } else {
-      output.set(outputRing);
-      output.fill(0, outputRing.length); // brief startup underrun — silence, not noise
-      outputRing = new Float32Array(0);
+      // Brief startup underrun — take what's there and leave the rest silent
+      // rather than noise. Reading straight into a view over the front of
+      // `output` avoids a separate temporary buffer.
+      const available = outputRing.length;
+      outputRing.read(output.subarray(0, available));
+      output.fill(0, available);
     }
   };
 
