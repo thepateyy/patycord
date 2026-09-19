@@ -1,6 +1,6 @@
 {
   "name": "patycord",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Barebones P2P voice chat for friends. No server hosting required.",
   "scripts": {
     "start": "tauri dev",
