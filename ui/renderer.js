@@ -255,15 +255,17 @@ function renderPeerList() {
         </span>
       </span>
       <span class="actions">
-        <button class="callToggleBtn ${inCall ? 'hangupBtn' : 'callBtnIcon'}" title="${inCall ? (connected ? 'Hang up' : 'Cancel') : 'Call'}"></button>
+        ${inCall || isOnline ? `<button class="callToggleBtn ${inCall ? 'hangupBtn' : 'callBtnIcon'}" title="${inCall ? (connected ? 'Hang up' : 'Cancel') : 'Call'}"></button>` : ''}
         <button class="removeBtn ghost" title="Remove">×</button>
       </span>`;
     const callToggleBtn = li.querySelector('.callToggleBtn');
-    callToggleBtn.innerHTML = inCall ? ICONS.phoneOff : ICONS.phone;
-    callToggleBtn.addEventListener('click', () => {
-      if (calls.has(friend.id)) hangUp(friend.id);
-      else connectTo(friend.id);
-    });
+    if (callToggleBtn) {
+      callToggleBtn.innerHTML = inCall ? ICONS.phoneOff : ICONS.phone;
+      callToggleBtn.addEventListener('click', () => {
+        if (calls.has(friend.id)) hangUp(friend.id);
+        else connectTo(friend.id);
+      });
+    }
     li.querySelector('.removeBtn').addEventListener('click', () => removeFriend(friend.id));
     peerListEl.appendChild(li);
   }
