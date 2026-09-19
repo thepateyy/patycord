@@ -4,7 +4,8 @@
   "description": "Barebones P2P voice chat for friends. No server hosting required.",
   "scripts": {
     "start": "tauri dev",
-    "build": "tauri build"
+    "build": "tauri build",
+    "serve": "node scripts/serve.js"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4"
