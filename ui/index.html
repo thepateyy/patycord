@@ -170,6 +170,16 @@
   .toast.info { border-left-color: var(--accent); }
   @keyframes toast-in { from { opacity: 0; transform: translateY(-6px); } }
 
+  #updateBanner {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 200;
+    background: var(--accent); color: #fff; font-size: 13px;
+    padding: 8px 14px; display: flex; align-items: center; justify-content: center; gap: 10px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+  }
+  #updateBanner button { background: rgba(255,255,255,0.18); }
+  #updateBanner button:hover { background: rgba(255,255,255,0.28); }
+  #updateBanner button:disabled { opacity: 0.6; }
+
   #screenGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-bottom: 12px; }
   .screenTile { position: relative; background: #000; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border); }
   .screenTile video { width: 100%; display: block; }
@@ -346,6 +356,10 @@
 
   <div id="toasts"></div>
   <div id="volumePopover" hidden></div>
+  <div id="updateBanner" hidden>
+    <span id="updateBannerText">A new version of patycord is available.</span>
+    <button id="updateBannerBtn">Update &amp; restart</button>
+  </div>
 
   <div class="app">
     <aside class="sidebar">

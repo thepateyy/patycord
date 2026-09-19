@@ -4,3 +4,7 @@ src-tauri/gen/
 src-tauri/icons/source.png
 patycord-logo.png
 *.log
+# Updater signing key — never commit this. Regenerate with `npx tauri signer
+# generate` if lost; the private key + password live outside the repo.
+*.key
+*.key.pub
