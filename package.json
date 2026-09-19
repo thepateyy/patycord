@@ -5,7 +5,8 @@
   "scripts": {
     "start": "tauri dev",
     "build": "tauri build",
-    "serve": "node scripts/serve.js"
+    "serve": "node scripts/serve.js",
+    "tauri": "tauri"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4"
