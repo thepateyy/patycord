@@ -28,6 +28,9 @@ const translations = {
     'update.updating': 'Updating…',
     'update.failed': 'Update failed: {error}',
 
+    'whatsNew.title': "You're now on patycord {version}.",
+    'whatsNew.dismiss': 'Got it',
+
     'sidebar.addFriend': 'Add a friend',
     'sidebar.theirId': 'their ID',
     'sidebar.add': 'Add',
@@ -112,6 +115,9 @@ const translations = {
     'update.button': 'Frissítés és újraindítás',
     'update.updating': 'Frissítés…',
     'update.failed': 'A frissítés sikertelen: {error}',
+
+    'whatsNew.title': 'Sikeres frissítés! Mostantól a patycord {version} verziót használod.',
+    'whatsNew.dismiss': 'Rendben',
 
     'sidebar.addFriend': 'Barát hozzáadása',
     'sidebar.theirId': 'barátod azonosítója',

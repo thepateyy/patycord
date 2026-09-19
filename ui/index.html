@@ -171,23 +171,25 @@
   .toast.info { border-left-color: var(--accent); }
   @keyframes toast-in { from { opacity: 0; transform: translateY(-6px); } }
 
-  #updateBanner {
+  /* Shared by #updateBanner (an update is available) and #whatsNewBanner
+     (just relaunched into one — shows once, right after an update). */
+  .topBanner {
     position: fixed; top: 0; left: 0; right: 0; z-index: 200;
     background: var(--accent); color: #fff; font-size: 13px;
     padding: 8px 14px; display: flex; flex-direction: column;
     box-shadow: 0 2px 10px rgba(0,0,0,0.35);
   }
-  #updateBanner[hidden] { display: none; } /* the class's own display: flex above would otherwise beat the attribute */
-  .updateBannerTop { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px 10px; }
-  #updateBanner button { background: rgba(255,255,255,0.18); }
-  #updateBanner button:hover { background: rgba(255,255,255,0.28); }
-  #updateBanner button:disabled { opacity: 0.6; }
-  .updateBannerNotes {
+  .topBanner[hidden] { display: none; } /* the class's own display: flex above would otherwise beat the attribute */
+  .topBannerTop { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px 10px; }
+  .topBanner button { background: rgba(255,255,255,0.18); }
+  .topBanner button:hover { background: rgba(255,255,255,0.28); }
+  .topBanner button:disabled { opacity: 0.6; }
+  .topBannerNotes {
     margin: 8px auto 0; max-width: 560px; max-height: 120px; overflow-y: auto;
     background: rgba(0,0,0,0.15); border-radius: var(--radius-sm); padding: 8px 10px;
     font-size: 12px; white-space: pre-wrap; text-align: left;
   }
-  .updateBannerNotes[hidden] { display: none; }
+  .topBannerNotes[hidden] { display: none; }
 
   #screenGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-bottom: 12px; }
   .screenTile { position: relative; background: #000; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border); }
@@ -371,12 +373,20 @@
 
   <div id="toasts"></div>
   <div id="volumePopover" hidden></div>
-  <div id="updateBanner" hidden>
-    <div class="updateBannerTop">
+  <div id="updateBanner" class="topBanner" hidden>
+    <div class="topBannerTop">
       <span id="updateBannerText" data-i18n="update.bannerDefault">A new version of patycord is available.</span>
       <button id="updateBannerBtn" data-i18n="update.button">Update &amp; restart</button>
     </div>
-    <div id="updateBannerNotes" class="updateBannerNotes" hidden></div>
+    <div id="updateBannerNotes" class="topBannerNotes" hidden></div>
+  </div>
+
+  <div id="whatsNewBanner" class="topBanner" hidden>
+    <div class="topBannerTop">
+      <span id="whatsNewText"></span>
+      <button id="whatsNewBtn" data-i18n="whatsNew.dismiss">Got it</button>
+    </div>
+    <div id="whatsNewNotes" class="topBannerNotes" hidden></div>
   </div>
 
   <div class="app">

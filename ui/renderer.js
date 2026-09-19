@@ -42,6 +42,10 @@ const updateBannerEl = document.getElementById('updateBanner');
 const updateBannerTextEl = document.getElementById('updateBannerText');
 const updateBannerBtn = document.getElementById('updateBannerBtn');
 const updateBannerNotesEl = document.getElementById('updateBannerNotes');
+const whatsNewBannerEl = document.getElementById('whatsNewBanner');
+const whatsNewTextEl = document.getElementById('whatsNewText');
+const whatsNewNotesEl = document.getElementById('whatsNewNotes');
+const whatsNewBtn = document.getElementById('whatsNewBtn');
 const appVersionEl = document.getElementById('appVersion');
 
 let localStream = null; // raw mic capture — mute toggles this track's .enabled
@@ -52,6 +56,7 @@ let screenStream = null;
 let presenceProbeInterval = null;
 let currentUpdate = null; // the Update object once checkForUpdates() finds one, so a language switch can re-render its (version-specific) banner text correctly instead of clobbering it back to the generic placeholder
 let micAccessFailed = false; // so a language switch can keep showing the right message instead of "connecting…"
+let justUpdatedInfo = null; // { version, notes } once the "what's new" banner is showing, for the same reason as currentUpdate above
 let reconnectTimer = null;
 let reconnectAttempts = 0;
 const calls = new Map(); // peerId -> { call, audioEl }
@@ -1202,6 +1207,9 @@ function applyLanguage() {
   if (currentUpdate) {
     updateBannerTextEl.textContent = t('update.available', { version: currentUpdate.version, current: currentUpdate.currentVersion });
   }
+  if (justUpdatedInfo) {
+    whatsNewTextEl.textContent = t('whatsNew.title', { version: justUpdatedInfo.version });
+  }
   muteBtn.title = muted ? t('main.unmute') : t('main.mute');
   shareScreenBtn.title = screenStream ? t('main.stopSharing') : t('main.shareScreen');
   renderPeerList();
@@ -1270,6 +1278,9 @@ async function checkForUpdates() {
       updateBannerBtn.textContent = t('update.updating');
       try {
         await update.downloadAndInstall();
+        // Read back on the next launch (a fresh process, this module's state is
+        // gone) to show a "what's new" banner once the relaunch actually lands.
+        localStorage.setItem('patycord.justUpdated', JSON.stringify({ version: update.version, notes: update.body || '' }));
         await window.__TAURI__.process.relaunch();
       } catch (err) {
         toast(t('update.failed', { error: err.message || err }));
@@ -1284,9 +1295,39 @@ async function checkForUpdates() {
   }
 }
 
+// If patycord.justUpdated is set, we just relaunched into a fresh install
+// triggered by the button above — this is a brand new process/module
+// instance, so that's the only way state carries across the relaunch. Shows
+// once, then clears itself so it doesn't reappear on the next ordinary launch.
+function showWhatsNewIfJustUpdated() {
+  const raw = localStorage.getItem('patycord.justUpdated');
+  if (!raw) return;
+  localStorage.removeItem('patycord.justUpdated');
+  let info;
+  try {
+    info = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  justUpdatedInfo = info;
+  whatsNewTextEl.textContent = t('whatsNew.title', { version: info.version });
+  if (info.notes && info.notes.trim()) {
+    whatsNewNotesEl.textContent = info.notes.trim();
+    whatsNewNotesEl.hidden = false;
+  } else {
+    whatsNewNotesEl.hidden = true;
+  }
+  whatsNewBannerEl.hidden = false;
+  whatsNewBtn.addEventListener('click', () => {
+    whatsNewBannerEl.hidden = true;
+    justUpdatedInfo = null;
+  }, { once: true });
+}
+
 applyStaticTranslations(); // before anything renders, including the username prompt modal
 if (getMyUsername()) setMyUsername(getMyUsername());
 saveFriends(loadFriends()); // persist the cleanup of any bad entries from past bugs
 renderPeerList();
+showWhatsNewIfJustUpdated();
 main();
 checkForUpdates();
