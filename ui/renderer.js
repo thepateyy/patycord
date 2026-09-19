@@ -1,3 +1,5 @@
+import createRNNWasmModule from './rnnoise.js';
+
 const myIdEl = document.getElementById('myId');
 const myNameEl = document.getElementById('myName');
 const profileAvatarEl = document.getElementById('profileAvatar');
@@ -35,7 +37,8 @@ const chatInputEl = document.getElementById('chatInput');
 const chatSendBtn = document.getElementById('chatSendBtn');
 const volumePopoverEl = document.getElementById('volumePopover');
 
-let localStream = null;
+let localStream = null; // raw mic capture — mute toggles this track's .enabled
+let processedStream = null; // what actually goes out over WebRTC (RNNoise'd, if available)
 let muted = false;
 let peer = null;
 let screenStream = null;
@@ -131,7 +134,11 @@ function getNoiseSuppressionEnabled() {
 
 function setNoiseSuppressionEnabled(enabled) {
   localStorage.setItem('patycord.noiseSuppression', enabled ? 'on' : 'off');
-  localStream?.getAudioTracks()[0]?.applyConstraints({ noiseSuppression: enabled, voiceIsolation: enabled }).catch(() => {});
+  rnnoiseEnabled = enabled;
+  if (!rnnoiseModule) {
+    // RNNoise didn't load — fall back to toggling the browser's own built-in suppression.
+    localStream?.getAudioTracks()[0]?.applyConstraints({ noiseSuppression: enabled, voiceIsolation: enabled }).catch(() => {});
+  }
 }
 
 function getMyUsername() {
@@ -597,7 +604,7 @@ function sendFriendRequest(id) {
 function meshCall(id) {
   if (!peer || id === peer.id || calls.has(id)) return;
   ensureDataConnection(id);
-  const call = peer.call(id, localStream);
+  const call = peer.call(id, processedStream);
   wireCall(call);
 
   // If they're offline (or never accept), the call just hangs — give up after a while
@@ -739,7 +746,7 @@ function renderIncomingCalls() {
       </span>`;
     div.querySelector('.acceptBtn').addEventListener('click', () => {
       pendingCalls.delete(id);
-      call.answer(localStream);
+      call.answer(processedStream);
       wireCall(call);
       renderIncomingCalls();
     });
@@ -884,19 +891,120 @@ function stopScreenShare() {
   log('stopped sharing your screen');
 }
 
+// --- RNNoise (open-source ML noise suppression, runs locally, no account needed) ---
+
+const RNNOISE_FRAME_SIZE = 480; // required by RNNoise, at 48kHz
+let rnnoiseModule = null;
+let rnnoiseState = 0;
+let rnnoiseInPtr = 0;
+let rnnoiseOutPtr = 0;
+let rnnoiseEnabled = true;
+let audioCtx = null;
+let scriptProcessorNode = null; // held onto so it isn't garbage-collected mid-call
+
+async function loadRNNoise() {
+  if (rnnoiseModule) return rnnoiseModule;
+  try {
+    rnnoiseModule = await createRNNWasmModule();
+    rnnoiseState = rnnoiseModule._rnnoise_create(0);
+    const bytes = RNNOISE_FRAME_SIZE * 4;
+    rnnoiseInPtr = rnnoiseModule._malloc(bytes);
+    rnnoiseOutPtr = rnnoiseModule._malloc(bytes);
+  } catch (err) {
+    log(`RNNoise failed to load, falling back to built-in suppression: ${err.message}`);
+    rnnoiseModule = null;
+  }
+  return rnnoiseModule;
+}
+
+// frameIn/frameOut: Float32Array(480), samples in [-1, 1] — RNNoise itself expects
+// roughly int16-scale values, hence the *32768 / /32768 around the actual call.
+function processFrameRNNoise(frameIn, frameOut) {
+  const m = rnnoiseModule;
+  for (let i = 0; i < RNNOISE_FRAME_SIZE; i++) m.HEAPF32[rnnoiseInPtr / 4 + i] = frameIn[i] * 32768;
+  m._rnnoise_process_frame(rnnoiseState, rnnoiseOutPtr, rnnoiseInPtr);
+  for (let i = 0; i < RNNOISE_FRAME_SIZE; i++) frameOut[i] = m.HEAPF32[rnnoiseOutPtr / 4 + i] / 32768;
+}
+
+// Runs the raw mic stream through RNNoise (when enabled) via a Web Audio graph and
+// returns a new MediaStream carrying the processed audio — this is what actually
+// goes out over WebRTC. Uses ScriptProcessorNode (deprecated but universally
+// supported, and simpler than an AudioWorklet for this scale) with internal ring
+// buffers, since RNNoise needs exactly 480-sample frames regardless of the
+// browser's own audio callback chunk size.
+function buildProcessedStream(rawStream) {
+  audioCtx = new AudioContext({ sampleRate: 48000 });
+  const source = audioCtx.createMediaStreamSource(rawStream);
+  const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+
+  let inputRing = new Float32Array(0);
+  let outputRing = new Float32Array(0);
+  const frameIn = new Float32Array(RNNOISE_FRAME_SIZE);
+  const frameOut = new Float32Array(RNNOISE_FRAME_SIZE);
+
+  const appendToRing = (ring, chunk) => {
+    const combined = new Float32Array(ring.length + chunk.length);
+    combined.set(ring);
+    combined.set(chunk, ring.length);
+    return combined;
+  };
+
+  processor.onaudioprocess = (e) => {
+    const input = e.inputBuffer.getChannelData(0);
+    const output = e.outputBuffer.getChannelData(0);
+
+    if (!rnnoiseEnabled || !rnnoiseModule) {
+      output.set(input);
+      return;
+    }
+
+    inputRing = appendToRing(inputRing, input);
+    while (inputRing.length >= RNNOISE_FRAME_SIZE) {
+      frameIn.set(inputRing.subarray(0, RNNOISE_FRAME_SIZE));
+      inputRing = inputRing.subarray(RNNOISE_FRAME_SIZE);
+      processFrameRNNoise(frameIn, frameOut);
+      outputRing = appendToRing(outputRing, frameOut);
+    }
+
+    if (outputRing.length >= output.length) {
+      output.set(outputRing.subarray(0, output.length));
+      outputRing = outputRing.subarray(output.length);
+    } else {
+      output.set(outputRing);
+      output.fill(0, outputRing.length); // brief startup underrun — silence, not noise
+      outputRing = new Float32Array(0);
+    }
+  };
+
+  source.connect(processor);
+  scriptProcessorNode = processor;
+  const dest = audioCtx.createMediaStreamDestination();
+  processor.connect(dest);
+  return dest.stream;
+}
+
 async function requestMic() {
   try {
-    // WebView2's built-in WebRTC audio processing handles all of this natively —
-    // no extra library needed.
-    const wantNS = getNoiseSuppressionEnabled();
     localStream = await navigator.mediaDevices.getUserMedia({
-      // voiceIsolation is a newer, much stronger ML-based noise/background suppression
-      // feature on top of the classic noiseSuppression flag — request both.
-      audio: { noiseSuppression: wantNS, voiceIsolation: wantNS, echoCancellation: true, autoGainControl: true },
+      // Browser-level suppression stays on as a safety net until we know whether
+      // RNNoise actually loaded — if it does, we turn this off below to avoid
+      // double-processing the same audio through two different denoisers.
+      audio: { noiseSuppression: true, voiceIsolation: true, echoCancellation: true, autoGainControl: true },
       video: false,
     });
     const settings = localStream.getAudioTracks()[0]?.getSettings();
     log(`mic settings: ${JSON.stringify(settings)}`);
+
+    rnnoiseEnabled = getNoiseSuppressionEnabled();
+    await loadRNNoise();
+    if (rnnoiseModule) {
+      localStream.getAudioTracks()[0].applyConstraints({ noiseSuppression: false, voiceIsolation: false }).catch(() => {});
+      processedStream = buildProcessedStream(localStream);
+      log('noise suppression: RNNoise (local, open-source ML model)');
+    } else {
+      processedStream = localStream;
+    }
+
     return true;
   } catch (err) {
     toast(`Microphone access failed: ${err.message} — check your mic is connected and restart patycord`);
