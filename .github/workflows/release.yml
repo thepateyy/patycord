@@ -18,6 +18,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need full history to diff against the previous tag
 
       - uses: actions/setup-node@v4
         with:
@@ -28,6 +30,22 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
+      # Release notes = the commit subjects since the last tag. Not GitHub's
+      # own PR-based auto-notes, since this repo mostly commits straight to
+      # dev rather than going through PRs — that API would come back sparse.
+      - name: Generate release notes
+        id: notes
+        shell: bash
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          RANGE="${PREV_TAG:+$PREV_TAG..}HEAD"
+          {
+            echo "notes<<RELEASE_NOTES_EOF"
+            git log "$RANGE" --no-merges --pretty=format:"- %s"
+            echo ""
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -36,5 +54,6 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'patycord ${{ github.ref_name }}'
+          releaseBody: ${{ steps.notes.outputs.notes }}
           releaseDraft: false
           prerelease: false
