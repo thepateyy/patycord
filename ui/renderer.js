@@ -3,6 +3,7 @@ import { t, getLanguage, setLanguage, applyStaticTranslations, LANGUAGES } from 
 
 const myIdEl = document.getElementById('myId');
 const myNameEl = document.getElementById('myName');
+const myActivityEl = document.getElementById('myActivityEl');
 const profileAvatarEl = document.getElementById('profileAvatar');
 const settingsBtn = document.getElementById('settingsBtn');
 const settingsModal = document.getElementById('settingsModal');
@@ -40,6 +41,7 @@ const chatMessagesEl = document.getElementById('chatMessages');
 const chatInputEl = document.getElementById('chatInput');
 const chatSendBtn = document.getElementById('chatSendBtn');
 const volumePopoverEl = document.getElementById('volumePopover');
+const screenSharePopoverEl = document.getElementById('screenSharePopover');
 const updateBannerEl = document.getElementById('updateBanner');
 const updateBannerTextEl = document.getElementById('updateBannerText');
 const updateBannerNotesBtn = document.getElementById('updateBannerNotesBtn');
@@ -65,9 +67,11 @@ let micAccessFailed = false; // so a language switch can keep showing the right 
 let justUpdatedInfo = null; // { version, notes } once the "what's new" banner is showing, for the same reason as currentUpdate above
 let reconnectTimer = null;
 let reconnectAttempts = 0;
+let myActivity = null; // process name of whatever's in the foreground, from Tauri's window-focus watcher
 const calls = new Map(); // peerId -> { call, audioEl }
 const dataConnections = new Map(); // peerId -> DataConnection, for peers who joined *through* us
 const presence = new Map(); // peerId -> boolean, from lightweight background probes
+const activityByPeer = new Map(); // peerId -> activity string or null, learned via 'hello'/'activity' messages
 const pendingCalls = new Map(); // peerId -> MediaConnection, awaiting Accept/Decline
 const outgoingScreenCalls = new Map(); // peerId -> MediaConnection, us sharing our screen to them
 const screenTiles = new Map(); // peerId -> { call, tileEl }, someone else's screen we're viewing
@@ -168,6 +172,22 @@ function setNoiseSuppressionEnabled(enabled) {
   }
 }
 
+function getScreenShareResolution() {
+  return localStorage.getItem('patycord.screenShareRes') || '1080';
+}
+
+function setScreenShareResolution(res) {
+  localStorage.setItem('patycord.screenShareRes', res);
+}
+
+function getScreenShareFps() {
+  return localStorage.getItem('patycord.screenShareFps') || '30';
+}
+
+function setScreenShareFps(fps) {
+  localStorage.setItem('patycord.screenShareFps', fps);
+}
+
 function getMyUsername() {
   return localStorage.getItem('patycord.myUsername') || '';
 }
@@ -262,9 +282,36 @@ function learnName(id, name) {
   renderIncomingCalls();
 }
 
+function renderMyActivity() {
+  if (myActivity) {
+    myActivityEl.textContent = t('friend.playing', { name: myActivity });
+    myActivityEl.hidden = false;
+  } else {
+    myActivityEl.hidden = true;
+  }
+}
+
+function setPeerActivity(id, activity) {
+  const clean = typeof activity === 'string' ? activity.slice(0, 60) : null;
+  if (activityByPeer.get(id) === clean) return;
+  if (clean) activityByPeer.set(id, clean);
+  else activityByPeer.delete(id);
+  scheduleRenderPeerList();
+}
+
+// Pushes our current activity to everyone we already have a live data connection
+// to — friends we're mid-call or mid-chat with get it instantly; everyone else picks
+// it up on their next presence probe (see probePresence).
+function broadcastActivity() {
+  for (const conn of dataConnections.values()) {
+    if (conn.open) conn.send({ type: 'activity', activity: myActivity });
+  }
+}
+
 function removeFriend(id) {
   saveFriends(loadFriends().filter((f) => f.id !== id));
   presence.delete(id); // only ever meaningful for someone on the friends list
+  activityByPeer.delete(id);
   chatHistories.delete(id);
   if (openChatPeerId === id) closeChat();
   if (!calls.has(id)) { dataConnections.get(id)?.close(); dataConnections.delete(id); } // keep it if still mid-call
@@ -407,6 +454,7 @@ function renderPeerList() {
     const inCall = calls.has(friend.id);
     const connected = !!calls.get(friend.id)?.audioEl; // stream actually flowing, not just dialing
     const isOnline = connected || presence.get(friend.id);
+    const activity = isOnline ? activityByPeer.get(friend.id) : null;
     const name = nameFor(friend);
     const li = document.createElement('li');
     li.className = 'friendRow';
@@ -418,7 +466,7 @@ function renderPeerList() {
         </span>
         <span class="who-text">
           <span class="name">${escapeHtml(name)}</span>
-          ${tagHtml(friend.id, name)}
+          ${activity ? `<span class="activity">${escapeHtml(t('friend.playing', { name: activity }))}</span>` : tagHtml(friend.id, name)}
         </span>
       </span>
       <span class="actions">
@@ -585,6 +633,54 @@ document.addEventListener('click', (e) => {
   closeVolumePopover();
 });
 
+function closeScreenSharePopover() {
+  screenSharePopoverEl.hidden = true;
+  screenSharePopoverEl.innerHTML = '';
+}
+
+function toggleScreenSharePopover(anchorEl) {
+  if (!screenSharePopoverEl.hidden) { closeScreenSharePopover(); return; }
+
+  screenSharePopoverEl.innerHTML = `
+    <div class="screenSharePopoverTitle">${t('main.shareScreen')}</div>
+    <div class="screenSharePopoverRow">
+      <select class="screenSharePopoverRes">
+        <option value="1080">1080p</option>
+        <option value="720">720p</option>
+      </select>
+      <select class="screenSharePopoverFps">
+        <option value="60">60 fps</option>
+        <option value="30">30 fps</option>
+      </select>
+    </div>
+    <button class="screenSharePopoverStart">${t('main.startSharing')}</button>`;
+
+  const resSelect = screenSharePopoverEl.querySelector('.screenSharePopoverRes');
+  const fpsSelect = screenSharePopoverEl.querySelector('.screenSharePopoverFps');
+  const startBtn = screenSharePopoverEl.querySelector('.screenSharePopoverStart');
+  resSelect.value = getScreenShareResolution();
+  fpsSelect.value = getScreenShareFps();
+
+  resSelect.addEventListener('change', () => setScreenShareResolution(resSelect.value));
+  fpsSelect.addEventListener('change', () => setScreenShareFps(fpsSelect.value));
+  startBtn.addEventListener('click', () => {
+    closeScreenSharePopover();
+    startScreenShare();
+  });
+
+  const rect = anchorEl.getBoundingClientRect();
+  screenSharePopoverEl.hidden = false;
+  const popRect = screenSharePopoverEl.getBoundingClientRect();
+  screenSharePopoverEl.style.left = `${Math.round(rect.left + rect.width / 2 - popRect.width / 2)}px`;
+  screenSharePopoverEl.style.top = `${Math.round(rect.top - popRect.height - 8)}px`;
+}
+
+document.addEventListener('click', (e) => {
+  if (screenSharePopoverEl.hidden) return;
+  if (screenSharePopoverEl.contains(e.target) || e.target.closest('#shareScreenBtn')) return;
+  closeScreenSharePopover();
+});
+
 function attachRemoteStream(peerId, stream) {
   const audio = new Audio();
   audio.srcObject = stream;
@@ -632,7 +728,7 @@ function wireCall(call) {
 function ensureDataConnection(id) {
   if (dataConnections.has(id)) return dataConnections.get(id);
   const conn = peer.connect(id);
-  conn.on('open', () => conn.send({ type: 'hello', name: getMyUsername() }));
+  conn.on('open', () => conn.send({ type: 'hello', name: getMyUsername(), activity: myActivity }));
   conn.on('data', (msg) => handleDataMessage(id, msg));
   conn.on('error', () => {}); // connectivity errors surface via the call itself
   conn.on('close', () => dataConnections.delete(id));
@@ -684,7 +780,7 @@ function connectTo(id) {
 // new joiner and auto-answer, same as any other call.
 function handleIncomingDataConnection(conn) {
   conn.on('open', () => {
-    conn.send({ type: 'hello', name: getMyUsername() });
+    conn.send({ type: 'hello', name: getMyUsername(), activity: myActivity });
     const roster = [...calls.keys()].filter((id) => id !== conn.peer);
     conn.send({ type: 'roster', peers: roster });
     for (const [otherId, otherConn] of dataConnections) {
@@ -699,6 +795,9 @@ function handleIncomingDataConnection(conn) {
 function handleDataMessage(fromId, msg) {
   if (msg.type === 'hello') {
     learnName(fromId, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
+    setPeerActivity(fromId, msg.activity);
+  } else if (msg.type === 'activity') {
+    setPeerActivity(fromId, msg.activity);
   } else if (msg.type === 'roster') {
     // A connected peer controls this list — validate before trusting it, and cap
     // it so a misbehaving/malicious one can't fan us out into countless outbound calls.
@@ -840,12 +939,24 @@ function probePresence(id) {
     if (settled) return;
     settled = true;
     presence.set(id, online);
+    if (!online) setPeerActivity(id, null); // stale activity shouldn't outlive them going offline
     scheduleRenderPeerList();
-    try { probe.close(); } catch {}
   };
-  const timer = setTimeout(() => finish(false), 4000);
-  probe.on('open', () => { clearTimeout(timer); finish(true); });
-  probe.on('error', () => { clearTimeout(timer); finish(false); });
+  const timer = setTimeout(() => { finish(false); try { probe.close(); } catch {} }, 4000);
+  probe.on('open', () => {
+    clearTimeout(timer);
+    finish(true);
+    probe.send({ type: 'hello', name: getMyUsername(), activity: myActivity });
+    // Give their reply (sent back from handleIncomingDataConnection on their end) a
+    // moment to arrive before tearing the probe connection back down.
+    setTimeout(() => { try { probe.close(); } catch {} }, 800);
+  });
+  probe.on('data', (msg) => {
+    if (msg.type !== 'hello') return;
+    learnName(id, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
+    setPeerActivity(id, msg.activity);
+  });
+  probe.on('error', () => { clearTimeout(timer); finish(false); try { probe.close(); } catch {} });
 }
 
 function probeAllFriends() {
@@ -997,7 +1108,14 @@ async function startScreenShare() {
     // audio: true captures system/app audio alongside the video when supported (typically
     // only when sharing the whole screen, not a single window) — falls back to video-only
     // silently if the OS/selection doesn't support it, no error either way.
-    screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    // Resolution/fps are "ideal", not "exact" — the browser still picks the closest it can
+    // do rather than failing the capture if the source doesn't match exactly.
+    const height = Number(getScreenShareResolution());
+    const fps = Number(getScreenShareFps());
+    screenStream = await navigator.mediaDevices.getDisplayMedia({
+      video: { height: { ideal: height }, width: { ideal: height * 16 / 9 }, frameRate: { ideal: fps, max: fps } },
+      audio: true,
+    });
   } catch (err) {
     toast(t('toast.screenShareFailed', { error: err.message }));
     return;
@@ -1322,6 +1440,7 @@ function applyLanguage() {
   }
   muteBtn.title = muted ? t('main.unmute') : t('main.mute');
   shareScreenBtn.title = screenStream ? t('main.stopSharing') : t('main.shareScreen');
+  renderMyActivity();
   renderPeerList();
   renderIncomingCalls();
   renderFriendRequests();
@@ -1345,7 +1464,7 @@ muteBtn.addEventListener('click', () => {
 
 shareScreenBtn.addEventListener('click', () => {
   if (screenStream) stopScreenShare();
-  else startScreenShare();
+  else toggleScreenSharePopover(shareScreenBtn);
 });
 
 logToggleBtn.addEventListener('click', () => {
@@ -1449,5 +1568,17 @@ if (getMyUsername()) setMyUsername(getMyUsername());
 saveFriends(loadFriends()); // persist the cleanup of any bad entries from past bugs
 renderPeerList();
 showWhatsNewIfJustUpdated();
+
+// Rust side watches OS window focus and tells us the foreground process's name
+// (or null between/outside games) — only fires in the real Tauri app, never in a
+// plain browser. We just relay whatever it says to friends; see lib.rs for the
+// actual detection and its denylist of non-game processes.
+window.__TAURI__?.event?.listen('active-app-changed', (event) => {
+  myActivity = typeof event.payload === 'string' ? event.payload : null;
+  renderMyActivity();
+  scheduleRenderPeerList();
+  broadcastActivity();
+});
+
 main();
 checkForUpdates();
