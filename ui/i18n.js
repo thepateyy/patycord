@@ -100,6 +100,8 @@ const translations = {
 
     'myId.micNeeded': 'mic access needed',
     'screen.label': "{name}'s screen",
+    'screen.fullscreen': 'Fullscreen',
+    'screen.windowed': 'Exit fullscreen',
   },
   hu: {
     'username.prompt': 'Mit lássanak mások, amikor hívod őket?',
@@ -196,6 +198,8 @@ const translations = {
 
     'myId.micNeeded': 'mikrofon-hozzáférés szükséges',
     'screen.label': '{name} képernyője',
+    'screen.fullscreen': 'Teljes képernyő',
+    'screen.windowed': 'Kilépés a teljes képernyőből',
   },
 };
 
