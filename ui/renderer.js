@@ -34,6 +34,8 @@ const callParticipantsEl = document.getElementById('callParticipants');
 const callEmptyStateEl = document.getElementById('callEmptyState');
 const usernameAvatar = document.getElementById('usernameAvatar');
 const chatPanelEl = document.getElementById('chatPanel');
+const chatHeaderNameEl = document.getElementById('chatHeaderName');
+const chatCloseBtn = document.getElementById('chatCloseBtn');
 const chatMessagesEl = document.getElementById('chatMessages');
 const chatInputEl = document.getElementById('chatInput');
 const chatSendBtn = document.getElementById('chatSendBtn');
@@ -67,6 +69,8 @@ const outgoingScreenCalls = new Map(); // peerId -> MediaConnection, us sharing 
 const screenTiles = new Map(); // peerId -> { call, tileEl }, someone else's screen we're viewing
 const remoteNames = new Map(); // peerId -> name they told us about themselves, live
 const pendingFriendRequests = new Map(); // peerId -> name, awaiting Accept/Decline
+const chatHistories = new Map(); // peerId -> [{ fromId, text }], per-friend — independent of calls, in-memory only
+let openChatPeerId = null; // whichever friend's thread is currently showing, or null
 
 // Peer IDs and call metadata come from whoever is calling us — including strangers,
 // not just saved friends — so they must never go into innerHTML unescaped.
@@ -131,6 +135,7 @@ const ICONS = {
   volumeMute: icon('<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>'),
   phone: icon('<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>'),
   phoneOff: icon('<path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67m-2.67-3.34a19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91"/><line x1="23" y1="1" x2="1" y2="23"/>'),
+  chat: icon('<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>'),
 };
 
 // --- persistent identity & friends list -------------------------------
@@ -254,6 +259,9 @@ function learnName(id, name) {
 function removeFriend(id) {
   saveFriends(loadFriends().filter((f) => f.id !== id));
   presence.delete(id); // only ever meaningful for someone on the friends list
+  chatHistories.delete(id);
+  if (openChatPeerId === id) closeChat();
+  if (!calls.has(id)) { dataConnections.get(id)?.close(); dataConnections.delete(id); } // keep it if still mid-call
   renderPeerList();
 }
 
@@ -409,6 +417,7 @@ function renderPeerList() {
       </span>
       <span class="actions">
         ${inCall || isOnline ? `<button class="callToggleBtn ${inCall ? 'hangupBtn' : 'callBtnIcon'}" title="${inCall ? (connected ? t('sidebar.hangUp') : t('sidebar.cancel')) : t('sidebar.call')}"></button>` : ''}
+        ${isOnline ? `<button class="chatToggleBtn${friend.id === openChatPeerId ? ' active' : ''}" title="${t('sidebar.chat')}"></button>` : ''}
         <button class="removeBtn ghost" title="${t('sidebar.remove')}">×</button>
       </span>`;
     const callToggleBtn = li.querySelector('.callToggleBtn');
@@ -417,6 +426,14 @@ function renderPeerList() {
       callToggleBtn.addEventListener('click', () => {
         if (calls.has(friend.id)) hangUp(friend.id);
         else connectTo(friend.id);
+      });
+    }
+    const chatToggleBtn = li.querySelector('.chatToggleBtn');
+    if (chatToggleBtn) {
+      chatToggleBtn.innerHTML = ICONS.chat;
+      chatToggleBtn.addEventListener('click', () => {
+        if (openChatPeerId === friend.id) closeChat();
+        else openChatWith(friend.id);
       });
     }
     li.querySelector('.removeBtn').addEventListener('click', () => removeFriend(friend.id));
@@ -475,10 +492,6 @@ function renderCallPanel() {
     }
     callParticipantsEl.appendChild(div);
   }
-
-  const wasVisible = !chatPanelEl.hidden;
-  chatPanelEl.hidden = calls.size === 0;
-  if (wasVisible && chatPanelEl.hidden) chatMessagesEl.innerHTML = ''; // chat ends with the call
 
   // Mute/share are call-specific — hide them the rest of the time, and drop
   // any in-progress screen share once there's no one left to send it to.
@@ -576,12 +589,12 @@ function hangUp(peerId) {
   const entry = calls.get(peerId);
   if (entry && entry.call) entry.call.close();
   removeCall(peerId);
-  // Hanging up on someone also ends any screen sharing and chat routing between you and them.
+  // Hanging up on someone also ends any screen sharing between you and them —
+  // but NOT the data connection: that's now shared, general-purpose infrastructure
+  // (chat, roster, friend requests), independent of the call's lifecycle.
   const outgoingScreen = outgoingScreenCalls.get(peerId);
   if (outgoingScreen) { outgoingScreen.close(); outgoingScreenCalls.delete(peerId); }
   removeScreenTile(peerId);
-  dataConnections.get(peerId)?.close();
-  dataConnections.delete(peerId);
 }
 
 function removeCall(peerId) {
@@ -687,8 +700,10 @@ function handleDataMessage(fromId, msg) {
   } else if (msg.type === 'peer-joined') {
     if (typeof msg.id === 'string') log(t('log.joining', { name: friendName(msg.id) }));
   } else if (msg.type === 'chat') {
-    if (!calls.has(fromId)) return; // only from people actually in the call with us
-    appendChatMessage(fromId, typeof msg.text === 'string' ? msg.text.slice(0, 2000) : '');
+    if (!acceptedFriends().some((f) => f.id === fromId)) return; // only from accepted friends, call or no call
+    const text = typeof msg.text === 'string' ? msg.text.slice(0, 2000) : '';
+    addChatMessage(fromId, fromId, text);
+    if (fromId !== openChatPeerId) toast(t('toast.newMessage', { name: friendName(fromId) }), 'info');
   } else if (msg.type === 'friend-request') {
     handleFriendRequest(fromId, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
   } else if (msg.type === 'friend-accept') {
@@ -700,10 +715,14 @@ function handleDataMessage(fromId, msg) {
 }
 
 // --- chat ----------------------------------------------------------
+// Per-friend, independent of calls entirely — each friend has their own
+// thread (chatHistories, in-memory only), and at most one shows at a time
+// (openChatPeerId). Works over the same data connection calls use for
+// roster/friend-request exchange, opened on demand rather than tied to
+// being in a call with them.
 
-function appendChatMessage(fromId, text) {
-  if (!text) return;
-  const displayName = fromId === peer.id ? 'You' : friendName(fromId);
+function renderChatMessage(fromId, text) {
+  const displayName = fromId === peer.id ? t('chat.you') : friendName(fromId);
   const div = document.createElement('div');
   div.className = 'chatMsg';
   const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -712,11 +731,42 @@ function appendChatMessage(fromId, text) {
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 }
 
+// Records a message in `peerId`'s thread (fromId is whoever actually sent
+// it — us or them) and renders it live only if that thread is open right now.
+function addChatMessage(peerId, fromId, text) {
+  if (!text) return;
+  const history = chatHistories.get(peerId) || [];
+  history.push({ fromId, text });
+  chatHistories.set(peerId, history);
+  if (peerId === openChatPeerId) renderChatMessage(fromId, text);
+}
+
+function openChatWith(peerId) {
+  ensureDataConnection(peerId); // independent of any call — opens on demand
+  openChatPeerId = peerId;
+  chatHeaderNameEl.textContent = friendName(peerId);
+  chatMessagesEl.innerHTML = '';
+  for (const { fromId, text } of chatHistories.get(peerId) || []) renderChatMessage(fromId, text);
+  chatPanelEl.hidden = false;
+  chatInputEl.focus();
+  renderPeerList(); // so the right friend's chat button shows as active
+}
+
+function closeChat() {
+  openChatPeerId = null;
+  chatPanelEl.hidden = true;
+  renderPeerList();
+}
+
 function sendChatMessage() {
   const text = chatInputEl.value.trim();
-  if (!text || calls.size === 0) return;
-  for (const id of calls.keys()) dataConnections.get(id)?.send({ type: 'chat', text });
-  appendChatMessage(peer.id, text);
+  if (!text || !openChatPeerId) return;
+  const peerId = openChatPeerId;
+  const conn = ensureDataConnection(peerId);
+  const send = () => conn.send({ type: 'chat', text });
+  if (conn.open) send();
+  else conn.on('open', send);
+  addChatMessage(peerId, peer.id, text);
   chatInputEl.value = '';
 }
 
@@ -1221,6 +1271,7 @@ chatSendBtn.addEventListener('click', sendChatMessage);
 chatInputEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') sendChatMessage();
 });
+chatCloseBtn.addEventListener('click', closeChat);
 
 muteBtn.addEventListener('click', () => {
   if (!localStream) return;
