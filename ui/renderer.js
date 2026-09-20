@@ -69,8 +69,10 @@ const outgoingScreenCalls = new Map(); // peerId -> MediaConnection, us sharing 
 const screenTiles = new Map(); // peerId -> { call, tileEl }, someone else's screen we're viewing
 const remoteNames = new Map(); // peerId -> name they told us about themselves, live
 const pendingFriendRequests = new Map(); // peerId -> name, awaiting Accept/Decline
-const chatHistories = new Map(); // peerId -> [{ fromId, text }], per-friend — independent of calls, in-memory only
-let openChatPeerId = null; // whichever friend's thread is currently showing, or null
+const chatHistories = new Map(); // peerId -> [{ fromId, text }], per-friend DMs — independent of calls, in-memory only
+let openChatPeerId = null; // whichever friend's DM thread is currently showing, or null (showing call chat / nothing)
+let callChatHistory = []; // shared broadcast thread for whoever's in the current call — resets when the call ends, like it always has
+let wasInCall = false; // so renderCallPanel() can detect the moment a call actually ends, to reset callChatHistory
 
 // Peer IDs and call metadata come from whoever is calling us — including strangers,
 // not just saved friends — so they must never go into innerHTML unescaped.
@@ -499,6 +501,10 @@ function renderCallPanel() {
   muteBtn.hidden = !inCall;
   shareScreenBtn.hidden = !inCall;
   if (!inCall && screenStream) stopScreenShare();
+
+  if (wasInCall && !inCall) callChatHistory = []; // call chat ends with the call, like it always has
+  wasInCall = inCall;
+  updateChatView();
 }
 
 // --- per-participant volume popover -------------------------------
@@ -700,10 +706,18 @@ function handleDataMessage(fromId, msg) {
   } else if (msg.type === 'peer-joined') {
     if (typeof msg.id === 'string') log(t('log.joining', { name: friendName(msg.id) }));
   } else if (msg.type === 'chat') {
-    if (!acceptedFriends().some((f) => f.id === fromId)) return; // only from accepted friends, call or no call
     const text = typeof msg.text === 'string' ? msg.text.slice(0, 2000) : '';
-    addChatMessage(fromId, fromId, text);
-    if (fromId !== openChatPeerId) toast(t('toast.newMessage', { name: friendName(fromId) }), 'info');
+    if (msg.scope === 'dm') {
+      if (!acceptedFriends().some((f) => f.id === fromId)) return; // only from accepted friends
+      addChatMessage(fromId, fromId, text);
+      if (fromId !== openChatPeerId) toast(t('toast.newMessage', { name: friendName(fromId) }), 'info');
+    } else {
+      // 'call' scope (or unmarked, from an older client) — only from someone actually in the call with us.
+      if (!calls.has(fromId)) return;
+      addCallChatMessage(fromId, text);
+      // Only worth a toast if call chat isn't the thing currently on screen — e.g. a DM is open instead.
+      if (openChatPeerId !== null) toast(t('toast.newCallMessage', { name: friendName(fromId) }), 'info');
+    }
   } else if (msg.type === 'friend-request') {
     handleFriendRequest(fromId, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
   } else if (msg.type === 'friend-accept') {
@@ -715,11 +729,16 @@ function handleDataMessage(fromId, msg) {
 }
 
 // --- chat ----------------------------------------------------------
-// Per-friend, independent of calls entirely — each friend has their own
-// thread (chatHistories, in-memory only), and at most one shows at a time
-// (openChatPeerId). Works over the same data connection calls use for
-// roster/friend-request exchange, opened on demand rather than tied to
-// being in a call with them.
+// Two independent kinds of thread share one panel:
+//  - DMs: per-friend (chatHistories), available any time a friend is
+//    online, entirely independent of calls. Opened via a friend's chat
+//    button; openChatPeerId tracks which one (if any) is showing.
+//  - Call chat: one shared broadcast thread (callChatHistory) for whoever
+//    is in the current call — the original behavior, auto-shown/hidden
+//    with the call and reset when it ends. Shown whenever no DM is open.
+// A DM being open always takes visual priority over call chat; closing it
+// falls back to call chat if a call is still active, rather than just
+// hiding the panel.
 
 function renderChatMessage(fromId, text) {
   const displayName = fromId === peer.id ? t('chat.you') : friendName(fromId);
@@ -731,8 +750,8 @@ function renderChatMessage(fromId, text) {
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 }
 
-// Records a message in `peerId`'s thread (fromId is whoever actually sent
-// it — us or them) and renders it live only if that thread is open right now.
+// Records a message in `peerId`'s DM thread (fromId is whoever actually
+// sent it — us or them) and renders it live only if that thread is open.
 function addChatMessage(peerId, fromId, text) {
   if (!text) return;
   const history = chatHistories.get(peerId) || [];
@@ -741,10 +760,17 @@ function addChatMessage(peerId, fromId, text) {
   if (peerId === openChatPeerId) renderChatMessage(fromId, text);
 }
 
+function addCallChatMessage(fromId, text) {
+  if (!text) return;
+  callChatHistory.push({ fromId, text });
+  if (openChatPeerId === null && calls.size > 0) renderChatMessage(fromId, text);
+}
+
 function openChatWith(peerId) {
   ensureDataConnection(peerId); // independent of any call — opens on demand
   openChatPeerId = peerId;
   chatHeaderNameEl.textContent = friendName(peerId);
+  chatCloseBtn.hidden = false;
   chatMessagesEl.innerHTML = '';
   for (const { fromId, text } of chatHistories.get(peerId) || []) renderChatMessage(fromId, text);
   chatPanelEl.hidden = false;
@@ -752,21 +778,51 @@ function openChatWith(peerId) {
   renderPeerList(); // so the right friend's chat button shows as active
 }
 
+// The call-chat view has no close button of its own — like before, it's
+// purely driven by being in a call or not (see renderCallPanel).
+function showCallChat() {
+  chatHeaderNameEl.textContent = t('chat.title');
+  chatCloseBtn.hidden = true;
+  chatMessagesEl.innerHTML = '';
+  for (const { fromId, text } of callChatHistory) renderChatMessage(fromId, text);
+  chatPanelEl.hidden = false;
+}
+
+// Re-decides what the chat panel should show given current state — call
+// this after anything that could change either side of that (DM open/close,
+// call start/end). A DM wins if one's open; otherwise call chat while in a
+// call; otherwise hide the panel entirely.
+function updateChatView() {
+  if (openChatPeerId !== null) {
+    chatPanelEl.hidden = false;
+    return;
+  }
+  if (calls.size > 0) showCallChat();
+  else chatPanelEl.hidden = true;
+}
+
 function closeChat() {
   openChatPeerId = null;
-  chatPanelEl.hidden = true;
+  updateChatView();
   renderPeerList();
 }
 
 function sendChatMessage() {
   const text = chatInputEl.value.trim();
-  if (!text || !openChatPeerId) return;
-  const peerId = openChatPeerId;
-  const conn = ensureDataConnection(peerId);
-  const send = () => conn.send({ type: 'chat', text });
-  if (conn.open) send();
-  else conn.on('open', send);
-  addChatMessage(peerId, peer.id, text);
+  if (!text) return;
+  if (openChatPeerId !== null) {
+    const peerId = openChatPeerId;
+    const conn = ensureDataConnection(peerId);
+    const send = () => conn.send({ type: 'chat', scope: 'dm', text });
+    if (conn.open) send();
+    else conn.on('open', send);
+    addChatMessage(peerId, peer.id, text);
+  } else if (calls.size > 0) {
+    for (const id of calls.keys()) dataConnections.get(id)?.send({ type: 'chat', scope: 'call', text });
+    addCallChatMessage(peer.id, text);
+  } else {
+    return;
+  }
   chatInputEl.value = '';
 }
 
