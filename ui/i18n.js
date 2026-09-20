@@ -41,6 +41,7 @@ const translations = {
     'sidebar.waiting': 'Waiting…',
     'sidebar.cancelRequest': 'Cancel request',
     'sidebar.remove': 'Remove',
+    'friend.playing': 'Playing {name}',
     'sidebar.call': 'Call',
     'sidebar.hangUp': 'Hang up',
     'sidebar.cancel': 'Cancel',
@@ -52,6 +53,7 @@ const translations = {
     'main.unmute': 'Unmute',
     'main.shareScreen': 'Share screen',
     'main.stopSharing': 'Stop sharing',
+    'main.startSharing': 'Start sharing',
     'main.activityLog': 'Activity log',
 
     'chat.title': 'Call chat',
@@ -135,6 +137,7 @@ const translations = {
     'sidebar.waiting': 'Várakozás…',
     'sidebar.cancelRequest': 'Kérés visszavonása',
     'sidebar.remove': 'Eltávolítás',
+    'friend.playing': '{name} játszik',
     'sidebar.call': 'Hívás',
     'sidebar.hangUp': 'Hívás befejezése',
     'sidebar.cancel': 'Mégse',
@@ -146,6 +149,7 @@ const translations = {
     'main.unmute': 'Némítás feloldása',
     'main.shareScreen': 'Képernyőmegosztás',
     'main.stopSharing': 'Megosztás leállítása',
+    'main.startSharing': 'Megosztás indítása',
     'main.activityLog': 'Napló',
 
     'chat.title': 'Hívás csevegés',

@@ -73,10 +73,12 @@
     margin-bottom: 4px;
   }
   .profileRow .avatar { width: 32px; height: 32px; font-size: 12.5px; }
+  .profileNameWrap { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .profileName {
-    flex: 1; min-width: 0; font-weight: 700; font-size: 13.5px; color: #fff;
+    font-weight: 700; font-size: 13.5px; color: #fff;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  .profileNameWrap .activity[hidden] { display: none; }
   .profileRow .dockBtn { width: 32px; height: 32px; background: transparent; }
   .profileRow .dockBtn svg { width: 17px; height: 17px; }
   .profileRow .dockBtn:hover { background: var(--bg-elev-2); }
@@ -130,6 +132,7 @@
   .tag { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
   .tag .tagName { color: var(--text-muted); }
   .tag .tagHash { color: var(--text-muted); opacity: 0.65; }
+  .activity { font-size: 10.5px; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
   #myId .tag { font-size: 13px; }
   #myId .tagName { color: var(--text); font-weight: 600; }
   .actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
@@ -315,6 +318,18 @@
   }
   .volumePct { font-size: 11px; color: var(--text-muted); }
 
+  #screenSharePopover[hidden] { display: none; }
+  #screenSharePopover {
+    position: fixed; z-index: 250; width: 190px; box-sizing: border-box;
+    background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    display: flex; flex-direction: column; gap: 8px;
+    animation: toast-in 0.12s ease-out;
+  }
+  .screenSharePopoverTitle { font-size: 11px; color: var(--text-muted); }
+  .screenSharePopoverRow { display: flex; gap: 6px; }
+  .screenSharePopoverRow select { flex: 1; min-width: 0; }
+
   .emptyState { color: var(--text-muted); font-size: 13px; text-align: center; padding: 60px 20px; }
   .emptyState svg { width: 40px; height: 40px; margin-bottom: 10px; opacity: 0.5; }
 
@@ -389,6 +404,7 @@
 
   <div id="toasts"></div>
   <div id="volumePopover" hidden></div>
+  <div id="screenSharePopover" hidden></div>
   <div id="updateBanner" class="topBanner" hidden>
     <div class="topBannerTop">
       <span id="updateBannerText" data-i18n="update.bannerDefault">A new version of patycord is available.</span>
@@ -424,7 +440,10 @@
 
       <div class="profileRow">
         <div class="avatar" id="profileAvatar" style="background:#3f7ff5;">?</div>
-        <div id="myName" class="profileName">—</div>
+        <div class="profileNameWrap">
+          <div id="myName" class="profileName">—</div>
+          <div id="myActivityEl" class="activity" hidden></div>
+        </div>
         <button id="settingsBtn" class="dockBtn ghost" title="Settings" data-i18n-title="settings.title"></button>
       </div>
 
