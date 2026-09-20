@@ -42,12 +42,16 @@ const chatSendBtn = document.getElementById('chatSendBtn');
 const volumePopoverEl = document.getElementById('volumePopover');
 const updateBannerEl = document.getElementById('updateBanner');
 const updateBannerTextEl = document.getElementById('updateBannerText');
+const updateBannerNotesBtn = document.getElementById('updateBannerNotesBtn');
 const updateBannerBtn = document.getElementById('updateBannerBtn');
-const updateBannerNotesEl = document.getElementById('updateBannerNotes');
 const whatsNewBannerEl = document.getElementById('whatsNewBanner');
 const whatsNewTextEl = document.getElementById('whatsNewText');
-const whatsNewNotesEl = document.getElementById('whatsNewNotes');
+const whatsNewNotesBtn = document.getElementById('whatsNewNotesBtn');
 const whatsNewBtn = document.getElementById('whatsNewBtn');
+const releaseNotesModalEl = document.getElementById('releaseNotesModal');
+const releaseNotesTitleEl = document.getElementById('releaseNotesTitle');
+const releaseNotesBodyEl = document.getElementById('releaseNotesBody');
+const closeReleaseNotesBtn = document.getElementById('closeReleaseNotesBtn');
 const appVersionEl = document.getElementById('appVersion');
 
 let localStream = null; // raw mic capture — mute toggles this track's .enabled
@@ -1358,6 +1362,23 @@ shareScreenBtn.innerHTML = ICONS.monitor;
 logToggleBtn.innerHTML = ICONS.list;
 settingsBtn.innerHTML = ICONS.gear;
 
+// --- release notes popup ------------------------------------------------
+// Shared by the "update available" banner and the post-update "what's new"
+// banner — a dismissible modal instead of dumping the notes inline in the
+// banner itself. Rendered via textContent, never innerHTML: it's remote
+// content (a GitHub Release body), never worth trusting as markup.
+function openReleaseNotes(title, notes) {
+  releaseNotesTitleEl.textContent = title;
+  releaseNotesBodyEl.textContent = notes;
+  releaseNotesModalEl.hidden = false;
+}
+
+function closeReleaseNotes() {
+  releaseNotesModalEl.hidden = true;
+}
+
+closeReleaseNotesBtn.addEventListener('click', closeReleaseNotes);
+
 // --- auto-update -------------------------------------------------------
 // Checks GitHub Releases (via the endpoint in tauri.conf.json) for a newer
 // signed build. window.__TAURI__ only exists inside the actual Tauri app
@@ -1371,14 +1392,9 @@ async function checkForUpdates() {
     currentUpdate = update;
     updateBannerTextEl.textContent = t('update.available', { version: update.version, current: update.currentVersion });
     updateBannerTextEl.removeAttribute('data-i18n'); // same reasoning as myIdEl above
-    // update.body is the GitHub Release's notes (plain text, set via `.textContent`
-    // rather than innerHTML — it's remote content, never worth trusting as markup).
-    if (update.body && update.body.trim()) {
-      updateBannerNotesEl.textContent = update.body.trim();
-      updateBannerNotesEl.hidden = false;
-    } else {
-      updateBannerNotesEl.hidden = true;
-    }
+    const notes = (update.body || '').trim();
+    updateBannerNotesBtn.hidden = !notes;
+    updateBannerNotesBtn.onclick = () => openReleaseNotes(t('update.available', { version: update.version, current: update.currentVersion }), notes);
     updateBannerEl.hidden = false;
     updateBannerBtn.addEventListener('click', async () => {
       updateBannerBtn.disabled = true;
@@ -1418,12 +1434,9 @@ function showWhatsNewIfJustUpdated() {
   }
   justUpdatedInfo = info;
   whatsNewTextEl.textContent = t('whatsNew.title', { version: info.version });
-  if (info.notes && info.notes.trim()) {
-    whatsNewNotesEl.textContent = info.notes.trim();
-    whatsNewNotesEl.hidden = false;
-  } else {
-    whatsNewNotesEl.hidden = true;
-  }
+  const notes = (info.notes || '').trim();
+  whatsNewNotesBtn.hidden = !notes;
+  whatsNewNotesBtn.onclick = () => openReleaseNotes(t('whatsNew.title', { version: info.version }), notes);
   whatsNewBannerEl.hidden = false;
   whatsNewBtn.addEventListener('click', () => {
     whatsNewBannerEl.hidden = true;

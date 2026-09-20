@@ -93,12 +93,21 @@
   button.ghost { background: transparent; color: var(--text-muted); }
   button.ghost:hover { background: var(--bg-elev-2); color: var(--text); }
 
-  input[type=text], select {
+  input[type=text] {
     background: var(--bg); border: 1px solid var(--border); color: var(--text);
     border-radius: var(--radius-sm); padding: 8px 10px; font-size: 13px; width: 100%;
     transition: border-color 0.12s ease;
   }
-  input[type=text]:focus, select:focus { outline: none; border-color: var(--accent); }
+  input[type=text]:focus { outline: none; border-color: var(--accent); }
+  select {
+    appearance: none; -webkit-appearance: none;
+    background: var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238892b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E") no-repeat right 10px center;
+    background-size: 14px; border: 1px solid var(--border); color: var(--text);
+    border-radius: var(--radius-sm); padding: 8px 32px 8px 10px; font-size: 13px; width: 100%;
+    cursor: pointer; transition: border-color 0.12s ease, background-color 0.12s ease;
+  }
+  select:hover { border-color: var(--accent); background-color: var(--bg-elev-2); }
+  select:focus { outline: none; border-color: var(--accent); }
   .connect-row { display: flex; gap: 6px; margin-top: 8px; }
   .connect-row input { flex: 1; }
 
@@ -192,12 +201,8 @@
   .topBanner button { background: rgba(255,255,255,0.18); }
   .topBanner button:hover { background: rgba(255,255,255,0.28); }
   .topBanner button:disabled { opacity: 0.6; }
-  .topBannerNotes {
-    margin: 8px auto 0; max-width: 560px; max-height: 120px; overflow-y: auto;
-    background: rgba(0,0,0,0.15); border-radius: var(--radius-sm); padding: 8px 10px;
-    font-size: 12px; white-space: pre-wrap; text-align: left;
-  }
-  .topBannerNotes[hidden] { display: none; }
+  .topBanner button.ghost { background: rgba(255,255,255,0.1); }
+  .topBanner button.ghost:hover { background: rgba(255,255,255,0.2); }
 
   #screenGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-bottom: 12px; }
   .screenTile { position: relative; background: #000; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border); }
@@ -207,8 +212,10 @@
     background: rgba(0,0,0,0.55); backdrop-filter: blur(4px); padding: 3px 8px; border-radius: 20px;
   }
 
-  #usernameModal[hidden] { display: none; }
-  #usernameModal {
+  /* Shared by every full-screen modal overlay (username prompt, settings,
+     release notes, ...). */
+  .modalOverlay[hidden] { display: none; }
+  .modalOverlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.65); backdrop-filter: blur(2px);
     display: flex; align-items: center; justify-content: center; z-index: 200;
     animation: toast-in 0.15s ease-out;
@@ -217,13 +224,13 @@
   #usernameModal .avatar { width: 48px; height: 48px; font-size: 18px; margin: 0 auto 10px; }
   #usernameModal p { margin: 0 0 12px; font-size: 13.5px; color: var(--text); }
 
-  #settingsModal[hidden] { display: none; }
-  #settingsModal {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.65); backdrop-filter: blur(2px);
-    display: flex; align-items: center; justify-content: center; z-index: 200;
-    animation: toast-in 0.15s ease-out;
-  }
   #settingsModal .card { width: min(320px, 90%); margin: 0; }
+
+  #releaseNotesModal .card { width: min(420px, 90%); margin: 0; max-height: 70vh; display: flex; flex-direction: column; }
+  .releaseNotesBody {
+    overflow-y: auto; font-size: 12.5px; line-height: 1.6; color: var(--text);
+    white-space: pre-wrap; text-align: left;
+  }
   .switchRow { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .switchLabel {
     text-transform: none; font-size: 13px; color: var(--text); font-weight: 500;
@@ -331,7 +338,7 @@
 </style>
 </head>
 <body>
-  <div id="usernameModal" hidden>
+  <div id="usernameModal" class="modalOverlay" hidden>
     <div class="card">
       <div class="avatar" id="usernameAvatar" style="background:#3f7ff5;">?</div>
       <p data-i18n="username.prompt">What should people see when you call them?</p>
@@ -342,7 +349,7 @@
     </div>
   </div>
 
-  <div id="settingsModal" hidden>
+  <div id="settingsModal" class="modalOverlay" hidden>
     <div class="card">
       <div class="modalHeader">
         <label data-i18n="settings.title">Settings</label>
@@ -385,17 +392,27 @@
   <div id="updateBanner" class="topBanner" hidden>
     <div class="topBannerTop">
       <span id="updateBannerText" data-i18n="update.bannerDefault">A new version of patycord is available.</span>
+      <button id="updateBannerNotesBtn" class="ghost" data-i18n="update.viewNotes" hidden>What's new</button>
       <button id="updateBannerBtn" data-i18n="update.button">Update &amp; restart</button>
     </div>
-    <div id="updateBannerNotes" class="topBannerNotes" hidden></div>
   </div>
 
   <div id="whatsNewBanner" class="topBanner" hidden>
     <div class="topBannerTop">
       <span id="whatsNewText"></span>
+      <button id="whatsNewNotesBtn" class="ghost" data-i18n="update.viewNotes" hidden>What's new</button>
       <button id="whatsNewBtn" data-i18n="whatsNew.dismiss">Got it</button>
     </div>
-    <div id="whatsNewNotes" class="topBannerNotes" hidden></div>
+  </div>
+
+  <div id="releaseNotesModal" class="modalOverlay" hidden>
+    <div class="card">
+      <div class="modalHeader">
+        <label id="releaseNotesTitle"></label>
+        <button id="closeReleaseNotesBtn" class="ghost">×</button>
+      </div>
+      <div id="releaseNotesBody" class="releaseNotesBody"></div>
+    </div>
   </div>
 
   <div class="app">
