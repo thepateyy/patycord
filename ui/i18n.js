@@ -53,9 +53,11 @@ const translations = {
     'main.stopSharing': 'Stop sharing',
     'main.activityLog': 'Activity log',
 
-    'chat.title': 'Chat',
     'chat.placeholder': 'Message',
     'chat.send': 'Send',
+    'chat.close': 'Close',
+    'chat.you': 'You',
+    'sidebar.chat': 'Chat',
 
     'incomingCall.label': 'Incoming call',
     'friendRequest.label': 'Friend request',
@@ -76,6 +78,7 @@ const translations = {
     'toast.notOnline': "{name} isn't online right now.",
     'toast.connectionError': 'Connection error: {error}',
     'toast.reconnecting': 'Lost connection to the signaling server, reconnecting…',
+    'toast.newMessage': 'New message from {name}',
 
     'log.disconnected': 'disconnected from {id}',
     'log.joining': '{name} is joining the call',
@@ -141,9 +144,11 @@ const translations = {
     'main.stopSharing': 'Megosztás leállítása',
     'main.activityLog': 'Napló',
 
-    'chat.title': 'Csevegés',
     'chat.placeholder': 'Üzenet',
     'chat.send': 'Küldés',
+    'chat.close': 'Bezárás',
+    'chat.you': 'Te',
+    'sidebar.chat': 'Csevegés',
 
     'incomingCall.label': 'Bejövő hívás',
     'friendRequest.label': 'Barátkérés',
@@ -164,6 +169,7 @@ const translations = {
     'toast.notOnline': '{name} jelenleg nincs online.',
     'toast.connectionError': 'Kapcsolódási hiba: {error}',
     'toast.reconnecting': 'Megszakadt a kapcsolat a jelzésszerverrel, újracsatlakozás…',
+    'toast.newMessage': 'Új üzenet tőle: {name}',
 
     'log.disconnected': 'megszakadt a kapcsolat vele: {id}',
     'log.joining': '{name} csatlakozik a híváshoz',
