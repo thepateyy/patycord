@@ -1587,10 +1587,10 @@ saveFriends(loadFriends()); // persist the cleanup of any bad entries from past 
 renderPeerList();
 showWhatsNewIfJustUpdated();
 
-// Rust side watches OS window focus and tells us the foreground process's name
-// (or null between/outside games) — only fires in the real Tauri app, never in a
-// plain browser. We just relay whatever it says to friends; see lib.rs for the
-// actual detection and its denylist of non-game processes.
+// Rust side polls running processes and tells us if a known game is open —
+// focused or just running in the background (or null if none is) — only fires in
+// the real Tauri app, never in a plain browser. We just relay whatever it says to
+// friends; see lib.rs for the actual detection against ui/game-names.json.
 window.__TAURI__?.event?.listen('active-app-changed', (event) => {
   myActivity = typeof event.payload === 'string' ? event.payload : null;
   renderMyActivity();
