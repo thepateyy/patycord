@@ -282,9 +282,27 @@ function learnName(id, name) {
   renderIncomingCalls();
 }
 
+// exe stem (no .exe) -> pretty game name, sourced from Discord's own "detectable
+// applications" list — see scripts/update-game-names.js for how it's built and
+// refreshed. Loaded async: activity shows the raw process name until this lands,
+// and forever for anything not in Discord's list.
+let gameNames = null;
+fetch('./game-names.json')
+  .then((r) => r.json())
+  .then((data) => {
+    gameNames = data;
+    renderMyActivity();
+    scheduleRenderPeerList();
+  })
+  .catch(() => {}); // no pretty names, not fatal — raw exe names still show
+
+function prettyActivityName(raw) {
+  return gameNames?.[raw.toLowerCase()] || raw;
+}
+
 function renderMyActivity() {
   if (myActivity) {
-    myActivityEl.textContent = t('friend.playing', { name: myActivity });
+    myActivityEl.textContent = t('friend.playing', { name: prettyActivityName(myActivity) });
     myActivityEl.hidden = false;
   } else {
     myActivityEl.hidden = true;
@@ -466,7 +484,7 @@ function renderPeerList() {
         </span>
         <span class="who-text">
           <span class="name">${escapeHtml(name)}</span>
-          ${activity ? `<span class="activity">${escapeHtml(t('friend.playing', { name: activity }))}</span>` : tagHtml(friend.id, name)}
+          ${activity ? `<span class="activity">${escapeHtml(t('friend.playing', { name: prettyActivityName(activity) }))}</span>` : tagHtml(friend.id, name)}
         </span>
       </span>
       <span class="actions">
