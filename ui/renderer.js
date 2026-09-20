@@ -402,6 +402,27 @@ function stopRinging() {
   ringInterval = null;
 }
 
+// Ringback for the caller's side — mirrors startRinging/stopRinging above but for
+// calls we placed ourselves that haven't connected yet (falling two-tone, vs. the
+// incoming ring's rising one, so the two are distinguishable by ear). Kept in sync
+// from wireCall/attachRemoteStream/removeCall, the three places a call's "dialing"
+// state (has a `call`, no `audioEl` yet) can change.
+let outgoingRingInterval = null;
+function playOutgoingRing() {
+  playTone(660, 220, { gain: 0.16 });
+  playTone(520, 220, { gain: 0.16, delayMs: 220 });
+}
+function updateOutgoingRingState() {
+  const dialing = [...calls.values()].some((entry) => entry.outgoing && entry.call && !entry.audioEl);
+  if (dialing && !outgoingRingInterval) {
+    playOutgoingRing();
+    outgoingRingInterval = setInterval(playOutgoingRing, 2000);
+  } else if (!dialing && outgoingRingInterval) {
+    clearInterval(outgoingRingInterval);
+    outgoingRingInterval = null;
+  }
+}
+
 // --- UI ------------------------------------------------------------
 
 function log(msg) {
@@ -708,6 +729,7 @@ function attachRemoteStream(peerId, stream) {
   const entry = calls.get(peerId) || {};
   entry.audioEl = audio;
   calls.set(peerId, entry);
+  updateOutgoingRingState();
   renderPeerList();
 }
 
@@ -729,14 +751,17 @@ function removeCall(peerId) {
     entry.audioEl.srcObject = null;
   }
   calls.delete(peerId);
+  updateOutgoingRingState();
   renderPeerList();
   log(t('log.disconnected', { id: peerId }));
 }
 
-function wireCall(call) {
+function wireCall(call, { outgoing = false } = {}) {
   const entry = calls.get(call.peer) || {};
   entry.call = call;
+  if (outgoing) entry.outgoing = true; // so updateOutgoingRingState only rings back for calls *we* placed
   calls.set(call.peer, entry);
+  updateOutgoingRingState();
   renderPeerList();
 
   call.on('stream', (remoteStream) => attachRemoteStream(call.peer, remoteStream));
@@ -773,7 +798,7 @@ function meshCall(id) {
   if (!peer || id === peer.id || calls.has(id)) return;
   ensureDataConnection(id);
   const call = peer.call(id, processedStream);
-  wireCall(call);
+  wireCall(call, { outgoing: true });
 
   // If they're offline (or never accept), the call just hangs — give up after a while
   // instead of leaving a permanently "connecting" entry.
@@ -1117,6 +1142,7 @@ function addScreenTile(peerId, call) {
   tile.appendChild(fullscreenBtn);
   screenGridEl.appendChild(tile);
   screenTiles.set(peerId, { call, tileEl: tile });
+  playScreenShareSound(true); // same cue the sharer hears on their end — parity, not just for them
 
   call.on('stream', (stream) => { video.srcObject = stream; });
   call.on('close', () => removeScreenTile(peerId));
@@ -1130,6 +1156,7 @@ function removeScreenTile(peerId) {
   entry.call.close(); // no-op if it's already closing/closed — this is often called from that path
   entry.tileEl.remove();
   screenTiles.delete(peerId);
+  playScreenShareSound(false);
 }
 
 // Only accept a screen share from someone we're already voice-connected to — an
