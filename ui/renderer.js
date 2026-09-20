@@ -34,6 +34,8 @@ const callParticipantsEl = document.getElementById('callParticipants');
 const callEmptyStateEl = document.getElementById('callEmptyState');
 const usernameAvatar = document.getElementById('usernameAvatar');
 const chatPanelEl = document.getElementById('chatPanel');
+const chatHeaderNameEl = document.getElementById('chatHeaderName');
+const chatCloseBtn = document.getElementById('chatCloseBtn');
 const chatMessagesEl = document.getElementById('chatMessages');
 const chatInputEl = document.getElementById('chatInput');
 const chatSendBtn = document.getElementById('chatSendBtn');
@@ -42,6 +44,10 @@ const updateBannerEl = document.getElementById('updateBanner');
 const updateBannerTextEl = document.getElementById('updateBannerText');
 const updateBannerBtn = document.getElementById('updateBannerBtn');
 const updateBannerNotesEl = document.getElementById('updateBannerNotes');
+const whatsNewBannerEl = document.getElementById('whatsNewBanner');
+const whatsNewTextEl = document.getElementById('whatsNewText');
+const whatsNewNotesEl = document.getElementById('whatsNewNotes');
+const whatsNewBtn = document.getElementById('whatsNewBtn');
 const appVersionEl = document.getElementById('appVersion');
 
 let localStream = null; // raw mic capture — mute toggles this track's .enabled
@@ -52,6 +58,7 @@ let screenStream = null;
 let presenceProbeInterval = null;
 let currentUpdate = null; // the Update object once checkForUpdates() finds one, so a language switch can re-render its (version-specific) banner text correctly instead of clobbering it back to the generic placeholder
 let micAccessFailed = false; // so a language switch can keep showing the right message instead of "connecting…"
+let justUpdatedInfo = null; // { version, notes } once the "what's new" banner is showing, for the same reason as currentUpdate above
 let reconnectTimer = null;
 let reconnectAttempts = 0;
 const calls = new Map(); // peerId -> { call, audioEl }
@@ -62,6 +69,10 @@ const outgoingScreenCalls = new Map(); // peerId -> MediaConnection, us sharing 
 const screenTiles = new Map(); // peerId -> { call, tileEl }, someone else's screen we're viewing
 const remoteNames = new Map(); // peerId -> name they told us about themselves, live
 const pendingFriendRequests = new Map(); // peerId -> name, awaiting Accept/Decline
+const chatHistories = new Map(); // peerId -> [{ fromId, text }], per-friend DMs — independent of calls, in-memory only
+let openChatPeerId = null; // whichever friend's DM thread is currently showing, or null (showing call chat / nothing)
+let callChatHistory = []; // shared broadcast thread for whoever's in the current call — resets when the call ends, like it always has
+let wasInCall = false; // so renderCallPanel() can detect the moment a call actually ends, to reset callChatHistory
 
 // Peer IDs and call metadata come from whoever is calling us — including strangers,
 // not just saved friends — so they must never go into innerHTML unescaped.
@@ -126,6 +137,7 @@ const ICONS = {
   volumeMute: icon('<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>'),
   phone: icon('<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>'),
   phoneOff: icon('<path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67m-2.67-3.34a19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91"/><line x1="23" y1="1" x2="1" y2="23"/>'),
+  chat: icon('<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>'),
 };
 
 // --- persistent identity & friends list -------------------------------
@@ -249,6 +261,9 @@ function learnName(id, name) {
 function removeFriend(id) {
   saveFriends(loadFriends().filter((f) => f.id !== id));
   presence.delete(id); // only ever meaningful for someone on the friends list
+  chatHistories.delete(id);
+  if (openChatPeerId === id) closeChat();
+  if (!calls.has(id)) { dataConnections.get(id)?.close(); dataConnections.delete(id); } // keep it if still mid-call
   renderPeerList();
 }
 
@@ -404,6 +419,7 @@ function renderPeerList() {
       </span>
       <span class="actions">
         ${inCall || isOnline ? `<button class="callToggleBtn ${inCall ? 'hangupBtn' : 'callBtnIcon'}" title="${inCall ? (connected ? t('sidebar.hangUp') : t('sidebar.cancel')) : t('sidebar.call')}"></button>` : ''}
+        ${isOnline ? `<button class="chatToggleBtn${friend.id === openChatPeerId ? ' active' : ''}" title="${t('sidebar.chat')}"></button>` : ''}
         <button class="removeBtn ghost" title="${t('sidebar.remove')}">×</button>
       </span>`;
     const callToggleBtn = li.querySelector('.callToggleBtn');
@@ -412,6 +428,14 @@ function renderPeerList() {
       callToggleBtn.addEventListener('click', () => {
         if (calls.has(friend.id)) hangUp(friend.id);
         else connectTo(friend.id);
+      });
+    }
+    const chatToggleBtn = li.querySelector('.chatToggleBtn');
+    if (chatToggleBtn) {
+      chatToggleBtn.innerHTML = ICONS.chat;
+      chatToggleBtn.addEventListener('click', () => {
+        if (openChatPeerId === friend.id) closeChat();
+        else openChatWith(friend.id);
       });
     }
     li.querySelector('.removeBtn').addEventListener('click', () => removeFriend(friend.id));
@@ -471,16 +495,16 @@ function renderCallPanel() {
     callParticipantsEl.appendChild(div);
   }
 
-  const wasVisible = !chatPanelEl.hidden;
-  chatPanelEl.hidden = calls.size === 0;
-  if (wasVisible && chatPanelEl.hidden) chatMessagesEl.innerHTML = ''; // chat ends with the call
-
   // Mute/share are call-specific — hide them the rest of the time, and drop
   // any in-progress screen share once there's no one left to send it to.
   const inCall = calls.size > 0;
   muteBtn.hidden = !inCall;
   shareScreenBtn.hidden = !inCall;
   if (!inCall && screenStream) stopScreenShare();
+
+  if (wasInCall && !inCall) callChatHistory = []; // call chat ends with the call, like it always has
+  wasInCall = inCall;
+  updateChatView();
 }
 
 // --- per-participant volume popover -------------------------------
@@ -571,12 +595,12 @@ function hangUp(peerId) {
   const entry = calls.get(peerId);
   if (entry && entry.call) entry.call.close();
   removeCall(peerId);
-  // Hanging up on someone also ends any screen sharing and chat routing between you and them.
+  // Hanging up on someone also ends any screen sharing between you and them —
+  // but NOT the data connection: that's now shared, general-purpose infrastructure
+  // (chat, roster, friend requests), independent of the call's lifecycle.
   const outgoingScreen = outgoingScreenCalls.get(peerId);
   if (outgoingScreen) { outgoingScreen.close(); outgoingScreenCalls.delete(peerId); }
   removeScreenTile(peerId);
-  dataConnections.get(peerId)?.close();
-  dataConnections.delete(peerId);
 }
 
 function removeCall(peerId) {
@@ -682,8 +706,18 @@ function handleDataMessage(fromId, msg) {
   } else if (msg.type === 'peer-joined') {
     if (typeof msg.id === 'string') log(t('log.joining', { name: friendName(msg.id) }));
   } else if (msg.type === 'chat') {
-    if (!calls.has(fromId)) return; // only from people actually in the call with us
-    appendChatMessage(fromId, typeof msg.text === 'string' ? msg.text.slice(0, 2000) : '');
+    const text = typeof msg.text === 'string' ? msg.text.slice(0, 2000) : '';
+    if (msg.scope === 'dm') {
+      if (!acceptedFriends().some((f) => f.id === fromId)) return; // only from accepted friends
+      addChatMessage(fromId, fromId, text);
+      if (fromId !== openChatPeerId) toast(t('toast.newMessage', { name: friendName(fromId) }), 'info');
+    } else {
+      // 'call' scope (or unmarked, from an older client) — only from someone actually in the call with us.
+      if (!calls.has(fromId)) return;
+      addCallChatMessage(fromId, text);
+      // Only worth a toast if call chat isn't the thing currently on screen — e.g. a DM is open instead.
+      if (openChatPeerId !== null) toast(t('toast.newCallMessage', { name: friendName(fromId) }), 'info');
+    }
   } else if (msg.type === 'friend-request') {
     handleFriendRequest(fromId, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
   } else if (msg.type === 'friend-accept') {
@@ -695,10 +729,19 @@ function handleDataMessage(fromId, msg) {
 }
 
 // --- chat ----------------------------------------------------------
+// Two independent kinds of thread share one panel:
+//  - DMs: per-friend (chatHistories), available any time a friend is
+//    online, entirely independent of calls. Opened via a friend's chat
+//    button; openChatPeerId tracks which one (if any) is showing.
+//  - Call chat: one shared broadcast thread (callChatHistory) for whoever
+//    is in the current call — the original behavior, auto-shown/hidden
+//    with the call and reset when it ends. Shown whenever no DM is open.
+// A DM being open always takes visual priority over call chat; closing it
+// falls back to call chat if a call is still active, rather than just
+// hiding the panel.
 
-function appendChatMessage(fromId, text) {
-  if (!text) return;
-  const displayName = fromId === peer.id ? 'You' : friendName(fromId);
+function renderChatMessage(fromId, text) {
+  const displayName = fromId === peer.id ? t('chat.you') : friendName(fromId);
   const div = document.createElement('div');
   div.className = 'chatMsg';
   const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -707,11 +750,79 @@ function appendChatMessage(fromId, text) {
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 }
 
+// Records a message in `peerId`'s DM thread (fromId is whoever actually
+// sent it — us or them) and renders it live only if that thread is open.
+function addChatMessage(peerId, fromId, text) {
+  if (!text) return;
+  const history = chatHistories.get(peerId) || [];
+  history.push({ fromId, text });
+  chatHistories.set(peerId, history);
+  if (peerId === openChatPeerId) renderChatMessage(fromId, text);
+}
+
+function addCallChatMessage(fromId, text) {
+  if (!text) return;
+  callChatHistory.push({ fromId, text });
+  if (openChatPeerId === null && calls.size > 0) renderChatMessage(fromId, text);
+}
+
+function openChatWith(peerId) {
+  ensureDataConnection(peerId); // independent of any call — opens on demand
+  openChatPeerId = peerId;
+  chatHeaderNameEl.textContent = friendName(peerId);
+  chatCloseBtn.hidden = false;
+  chatMessagesEl.innerHTML = '';
+  for (const { fromId, text } of chatHistories.get(peerId) || []) renderChatMessage(fromId, text);
+  chatPanelEl.hidden = false;
+  chatInputEl.focus();
+  renderPeerList(); // so the right friend's chat button shows as active
+}
+
+// The call-chat view has no close button of its own — like before, it's
+// purely driven by being in a call or not (see renderCallPanel).
+function showCallChat() {
+  chatHeaderNameEl.textContent = t('chat.title');
+  chatCloseBtn.hidden = true;
+  chatMessagesEl.innerHTML = '';
+  for (const { fromId, text } of callChatHistory) renderChatMessage(fromId, text);
+  chatPanelEl.hidden = false;
+}
+
+// Re-decides what the chat panel should show given current state — call
+// this after anything that could change either side of that (DM open/close,
+// call start/end). A DM wins if one's open; otherwise call chat while in a
+// call; otherwise hide the panel entirely.
+function updateChatView() {
+  if (openChatPeerId !== null) {
+    chatPanelEl.hidden = false;
+    return;
+  }
+  if (calls.size > 0) showCallChat();
+  else chatPanelEl.hidden = true;
+}
+
+function closeChat() {
+  openChatPeerId = null;
+  updateChatView();
+  renderPeerList();
+}
+
 function sendChatMessage() {
   const text = chatInputEl.value.trim();
-  if (!text || calls.size === 0) return;
-  for (const id of calls.keys()) dataConnections.get(id)?.send({ type: 'chat', text });
-  appendChatMessage(peer.id, text);
+  if (!text) return;
+  if (openChatPeerId !== null) {
+    const peerId = openChatPeerId;
+    const conn = ensureDataConnection(peerId);
+    const send = () => conn.send({ type: 'chat', scope: 'dm', text });
+    if (conn.open) send();
+    else conn.on('open', send);
+    addChatMessage(peerId, peer.id, text);
+  } else if (calls.size > 0) {
+    for (const id of calls.keys()) dataConnections.get(id)?.send({ type: 'chat', scope: 'call', text });
+    addCallChatMessage(peer.id, text);
+  } else {
+    return;
+  }
   chatInputEl.value = '';
 }
 
@@ -1202,6 +1313,9 @@ function applyLanguage() {
   if (currentUpdate) {
     updateBannerTextEl.textContent = t('update.available', { version: currentUpdate.version, current: currentUpdate.currentVersion });
   }
+  if (justUpdatedInfo) {
+    whatsNewTextEl.textContent = t('whatsNew.title', { version: justUpdatedInfo.version });
+  }
   muteBtn.title = muted ? t('main.unmute') : t('main.mute');
   shareScreenBtn.title = screenStream ? t('main.stopSharing') : t('main.shareScreen');
   renderPeerList();
@@ -1213,6 +1327,7 @@ chatSendBtn.addEventListener('click', sendChatMessage);
 chatInputEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') sendChatMessage();
 });
+chatCloseBtn.addEventListener('click', closeChat);
 
 muteBtn.addEventListener('click', () => {
   if (!localStream) return;
@@ -1270,6 +1385,9 @@ async function checkForUpdates() {
       updateBannerBtn.textContent = t('update.updating');
       try {
         await update.downloadAndInstall();
+        // Read back on the next launch (a fresh process, this module's state is
+        // gone) to show a "what's new" banner once the relaunch actually lands.
+        localStorage.setItem('patycord.justUpdated', JSON.stringify({ version: update.version, notes: update.body || '' }));
         await window.__TAURI__.process.relaunch();
       } catch (err) {
         toast(t('update.failed', { error: err.message || err }));
@@ -1284,9 +1402,39 @@ async function checkForUpdates() {
   }
 }
 
+// If patycord.justUpdated is set, we just relaunched into a fresh install
+// triggered by the button above — this is a brand new process/module
+// instance, so that's the only way state carries across the relaunch. Shows
+// once, then clears itself so it doesn't reappear on the next ordinary launch.
+function showWhatsNewIfJustUpdated() {
+  const raw = localStorage.getItem('patycord.justUpdated');
+  if (!raw) return;
+  localStorage.removeItem('patycord.justUpdated');
+  let info;
+  try {
+    info = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  justUpdatedInfo = info;
+  whatsNewTextEl.textContent = t('whatsNew.title', { version: info.version });
+  if (info.notes && info.notes.trim()) {
+    whatsNewNotesEl.textContent = info.notes.trim();
+    whatsNewNotesEl.hidden = false;
+  } else {
+    whatsNewNotesEl.hidden = true;
+  }
+  whatsNewBannerEl.hidden = false;
+  whatsNewBtn.addEventListener('click', () => {
+    whatsNewBannerEl.hidden = true;
+    justUpdatedInfo = null;
+  }, { once: true });
+}
+
 applyStaticTranslations(); // before anything renders, including the username prompt modal
 if (getMyUsername()) setMyUsername(getMyUsername());
 saveFriends(loadFriends()); // persist the cleanup of any bad entries from past bugs
 renderPeerList();
+showWhatsNewIfJustUpdated();
 main();
 checkForUpdates();
