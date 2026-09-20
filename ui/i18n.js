@@ -28,6 +28,9 @@ const translations = {
     'update.updating': 'Updating…',
     'update.failed': 'Update failed: {error}',
 
+    'whatsNew.title': "You're now on patycord {version}.",
+    'whatsNew.dismiss': 'Got it',
+
     'sidebar.addFriend': 'Add a friend',
     'sidebar.theirId': 'their ID',
     'sidebar.add': 'Add',
@@ -50,9 +53,12 @@ const translations = {
     'main.stopSharing': 'Stop sharing',
     'main.activityLog': 'Activity log',
 
-    'chat.title': 'Chat',
+    'chat.title': 'Call chat',
     'chat.placeholder': 'Message',
     'chat.send': 'Send',
+    'chat.close': 'Close',
+    'chat.you': 'You',
+    'sidebar.chat': 'Chat',
 
     'incomingCall.label': 'Incoming call',
     'friendRequest.label': 'Friend request',
@@ -73,6 +79,8 @@ const translations = {
     'toast.notOnline': "{name} isn't online right now.",
     'toast.connectionError': 'Connection error: {error}',
     'toast.reconnecting': 'Lost connection to the signaling server, reconnecting…',
+    'toast.newMessage': 'New message from {name}',
+    'toast.newCallMessage': 'New call chat message from {name}',
 
     'log.disconnected': 'disconnected from {id}',
     'log.joining': '{name} is joining the call',
@@ -113,6 +121,9 @@ const translations = {
     'update.updating': 'Frissítés…',
     'update.failed': 'A frissítés sikertelen: {error}',
 
+    'whatsNew.title': 'Sikeres frissítés! Mostantól a patycord {version} verziót használod.',
+    'whatsNew.dismiss': 'Rendben',
+
     'sidebar.addFriend': 'Barát hozzáadása',
     'sidebar.theirId': 'barátod azonosítója',
     'sidebar.add': 'Hozzáadás',
@@ -135,9 +146,12 @@ const translations = {
     'main.stopSharing': 'Megosztás leállítása',
     'main.activityLog': 'Napló',
 
-    'chat.title': 'Csevegés',
+    'chat.title': 'Hívás csevegés',
     'chat.placeholder': 'Üzenet',
     'chat.send': 'Küldés',
+    'chat.close': 'Bezárás',
+    'chat.you': 'Te',
+    'sidebar.chat': 'Csevegés',
 
     'incomingCall.label': 'Bejövő hívás',
     'friendRequest.label': 'Barátkérés',
@@ -158,6 +172,8 @@ const translations = {
     'toast.notOnline': '{name} jelenleg nincs online.',
     'toast.connectionError': 'Kapcsolódási hiba: {error}',
     'toast.reconnecting': 'Megszakadt a kapcsolat a jelzésszerverrel, újracsatlakozás…',
+    'toast.newMessage': 'Új üzenet tőle: {name}',
+    'toast.newCallMessage': 'Új üzenet a hívás csevegésben tőle: {name}',
 
     'log.disconnected': 'megszakadt a kapcsolat vele: {id}',
     'log.joining': '{name} csatlakozik a híváshoz',
