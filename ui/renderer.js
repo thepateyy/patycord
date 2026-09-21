@@ -78,8 +78,12 @@ const outgoingScreenCalls = new Map(); // peerId -> MediaConnection, us sharing 
 const screenTiles = new Map(); // peerId -> { call, tileEl }, someone else's screen we're viewing
 const remoteNames = new Map(); // peerId -> name they told us about themselves, live
 const pendingFriendRequests = new Map(); // peerId -> name, awaiting Accept/Decline
-const chatHistories = loadChatHistories(); // peerId -> [{ fromId, text }], per-friend DMs — independent of calls, persisted to localStorage
-const pendingMessages = loadPendingMessages(); // peerId -> [{ type, scope, text }], DMs sent while they were offline — flushed once a connection to them opens
+// Populated for real by initSecureStore() before anything else runs (see the bottom
+// of this file) — empty here only because loadChatHistories()/loadPendingMessages()
+// need secureStore, which is loaded asynchronously and can't be ready yet at the
+// point module-level code runs synchronously.
+let chatHistories = new Map(); // peerId -> [{ fromId, text }], per-friend DMs — independent of calls, persisted encrypted (see secureStore)
+let pendingMessages = new Map(); // peerId -> [{ type, scope, text }], DMs sent while they were offline — flushed once a connection to them opens
 let openChatPeerId = null; // whichever friend's DM thread is currently showing, or null (showing call chat / nothing)
 let callChatHistory = []; // shared broadcast thread for whoever's in the current call — resets when the call ends, like it always has
 let wasInCall = false; // so renderCallPanel() can detect the moment a call actually ends, to reset callChatHistory
@@ -152,15 +156,85 @@ const ICONS = {
   minimize: icon('<path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/>'),
 };
 
+// --- secure store --------------------------------------------------
+// Everything genuinely sensitive (identity, friends, chat history, queued DMs)
+// lives in one encrypted-at-rest blob instead of plain localStorage — see
+// secure_store::{load,save}_secure_store in lib.rs. Encrypted with Windows DPAPI,
+// which ties the key to the current Windows user account, so a copy of the file
+// (or another process reading it directly) can't be decrypted without also being
+// that user. Cosmetic prefs (language, noise suppression, screen-share quality,
+// ...) aren't worth the complexity and stay in plain localStorage.
+const SECURE_STORE_KEYS = ['myId', 'myUsername', 'friends', 'chatHistories', 'pendingMessages'];
+const secureStore = {}; // populated by initSecureStore() before anything else runs
+
+function readLegacyPlaintextStore() {
+  const result = {};
+  for (const key of SECURE_STORE_KEYS) {
+    const raw = localStorage.getItem(`patycord.${key}`);
+    if (raw === null) continue;
+    if (key === 'myId' || key === 'myUsername') {
+      result[key] = raw; // stored as a bare string, not JSON
+    } else {
+      try { result[key] = JSON.parse(raw); } catch { /* skip a corrupt entry */ }
+    }
+  }
+  return result;
+}
+
+function clearLegacyPlaintextStore() {
+  for (const key of SECURE_STORE_KEYS) localStorage.removeItem(`patycord.${key}`);
+}
+
+async function initSecureStore() {
+  const invoke = window.__TAURI__?.core?.invoke;
+  if (!invoke) {
+    // No Tauri backend to encrypt with (browser-testing via `npm run serve`) — just
+    // read the old plaintext keys directly so this path stays testable.
+    Object.assign(secureStore, readLegacyPlaintextStore());
+    return;
+  }
+  try {
+    Object.assign(secureStore, JSON.parse(await invoke('load_secure_store')));
+  } catch {
+    // Corrupt or unreadable — start fresh rather than block the app from opening.
+  }
+  // One-time migration: anything still sitting in plaintext localStorage from
+  // before this existed, that the encrypted store doesn't already have, moves over
+  // and gets wiped from plaintext.
+  const legacy = readLegacyPlaintextStore();
+  let migrated = false;
+  for (const key of SECURE_STORE_KEYS) {
+    if (secureStore[key] !== undefined || legacy[key] === undefined) continue;
+    secureStore[key] = legacy[key];
+    migrated = true;
+  }
+  if (migrated) {
+    clearLegacyPlaintextStore();
+    saveSecureStore();
+  }
+}
+
+function saveSecureStore() {
+  const invoke = window.__TAURI__?.core?.invoke;
+  if (invoke) {
+    invoke('save_secure_store', { data: JSON.stringify(secureStore) }).catch(() => {});
+    return;
+  }
+  // Browser-testing fallback — mirror into plain localStorage.
+  for (const key of SECURE_STORE_KEYS) {
+    if (secureStore[key] === undefined) continue;
+    localStorage.setItem(`patycord.${key}`, key === 'myId' || key === 'myUsername' ? secureStore[key] : JSON.stringify(secureStore[key]));
+  }
+}
+
 // --- persistent identity & friends list -------------------------------
 
 function getMyPersistentId() {
-  let id = localStorage.getItem('patycord.myId');
-  if (!id) {
-    id = 'p-' + crypto.randomUUID();
-    localStorage.setItem('patycord.myId', id);
+  if (!secureStore.myId) {
+    secureStore.myId = 'p-' + crypto.randomUUID();
+    saveSecureStore();
   }
-  return id;
+  return secureStore.myId;
 }
 
 function getShareActivityEnabled() {
@@ -208,11 +282,12 @@ function setScreenShareFps(fps) {
 }
 
 function getMyUsername() {
-  return localStorage.getItem('patycord.myUsername') || '';
+  return secureStore.myUsername || '';
 }
 
 function setMyUsername(name) {
-  localStorage.setItem('patycord.myUsername', name);
+  secureStore.myUsername = name;
+  saveSecureStore();
   myNameEl.textContent = name;
   profileAvatarEl.textContent = initialsFor(name);
   profileAvatarEl.style.background = colorForId(getMyPersistentId());
@@ -243,51 +318,40 @@ function promptForUsername() {
 }
 
 function loadFriends() {
-  try {
-    const friends = JSON.parse(localStorage.getItem('patycord.friends') || '[]');
-    // Defensively drop any bad entries a past bug might have saved (empty id, etc).
-    return friends.filter((f) => f && typeof f.id === 'string' && f.id.trim());
-  } catch {
-    return [];
-  }
+  const friends = Array.isArray(secureStore.friends) ? secureStore.friends : [];
+  // Defensively drop any bad entries a past bug might have saved (empty id, etc).
+  return friends.filter((f) => f && typeof f.id === 'string' && f.id.trim());
 }
 
 function saveFriends(friends) {
-  localStorage.setItem('patycord.friends', JSON.stringify(friends));
+  secureStore.friends = friends;
+  saveSecureStore();
 }
 
-const CHAT_HISTORY_LIMIT = 300; // per peer — plenty for scrollback, bounded so localStorage can't grow forever
+const CHAT_HISTORY_LIMIT = 300; // per peer — plenty for scrollback, bounded so the store can't grow forever
 
 function loadChatHistories() {
-  try {
-    const raw = JSON.parse(localStorage.getItem('patycord.chatHistories') || '{}');
-    return new Map(Object.entries(raw).filter(([id, msgs]) => id && Array.isArray(msgs)));
-  } catch {
-    return new Map();
-  }
+  const raw = secureStore.chatHistories && typeof secureStore.chatHistories === 'object' ? secureStore.chatHistories : {};
+  return new Map(Object.entries(raw).filter(([id, msgs]) => id && Array.isArray(msgs)));
 }
 
 function saveChatHistories() {
-  const obj = Object.fromEntries(
+  secureStore.chatHistories = Object.fromEntries(
     [...chatHistories].map(([id, msgs]) => [id, msgs.slice(-CHAT_HISTORY_LIMIT)])
   );
-  localStorage.setItem('patycord.chatHistories', JSON.stringify(obj));
+  saveSecureStore();
 }
 
 const PENDING_MESSAGE_LIMIT = 50; // per peer — a permanently-offline/removed friend shouldn't grow this forever
 
 function loadPendingMessages() {
-  try {
-    const raw = JSON.parse(localStorage.getItem('patycord.pendingMessages') || '{}');
-    return new Map(Object.entries(raw).filter(([id, msgs]) => id && Array.isArray(msgs)));
-  } catch {
-    return new Map();
-  }
+  const raw = secureStore.pendingMessages && typeof secureStore.pendingMessages === 'object' ? secureStore.pendingMessages : {};
+  return new Map(Object.entries(raw).filter(([id, msgs]) => id && Array.isArray(msgs)));
 }
 
 function savePendingMessages() {
-  const obj = Object.fromEntries(pendingMessages);
-  localStorage.setItem('patycord.pendingMessages', JSON.stringify(obj));
+  secureStore.pendingMessages = Object.fromEntries(pendingMessages);
+  saveSecureStore();
 }
 
 // Entries saved before the pending/accepted split have no `status` field —
@@ -1744,22 +1808,32 @@ function showWhatsNewIfJustUpdated() {
   }, { once: true });
 }
 
-applyStaticTranslations(); // before anything renders, including the username prompt modal
-if (getMyUsername()) setMyUsername(getMyUsername());
-saveFriends(loadFriends()); // persist the cleanup of any bad entries from past bugs
-renderPeerList();
-showWhatsNewIfJustUpdated();
+// Everything below depends on secureStore being loaded first (friends, chat
+// history, the persistent ID) — wrapped in one async entry point rather than
+// scattering awaits through what used to be plain top-level statements.
+async function init() {
+  applyStaticTranslations(); // before anything renders, including the username prompt modal
+  await initSecureStore();
+  chatHistories = loadChatHistories();
+  pendingMessages = loadPendingMessages();
+  if (getMyUsername()) setMyUsername(getMyUsername());
+  saveFriends(loadFriends()); // persist the cleanup of any bad entries from past bugs
+  renderPeerList();
+  showWhatsNewIfJustUpdated();
 
-// Rust side polls running processes and tells us if a known game is open —
-// focused or just running in the background (or null if none is) — only fires in
-// the real Tauri app, never in a plain browser. We just relay whatever it says to
-// friends; see lib.rs for the actual detection against ui/game-names.json.
-window.__TAURI__?.event?.listen('active-app-changed', (event) => {
-  myActivity = typeof event.payload === 'string' ? event.payload : null;
-  renderMyActivity();
-  scheduleRenderPeerList();
-  broadcastActivity();
-});
+  // Rust side polls running processes and tells us if a known game is open —
+  // focused or just running in the background (or null if none is) — only fires in
+  // the real Tauri app, never in a plain browser. We just relay whatever it says to
+  // friends; see lib.rs for the actual detection against ui/game-names.json.
+  window.__TAURI__?.event?.listen('active-app-changed', (event) => {
+    myActivity = typeof event.payload === 'string' ? event.payload : null;
+    renderMyActivity();
+    scheduleRenderPeerList();
+    broadcastActivity();
+  });
 
-main();
-checkForUpdates();
+  main();
+  checkForUpdates();
+}
+
+init();
