@@ -7,6 +7,8 @@
     "core:default",
     "core:app:allow-version",
     "updater:default",
-    "process:allow-restart"
+    "process:allow-restart",
+    "allow-load-secure-store",
+    "allow-save-secure-store"
   ]
 }
