@@ -11,6 +11,7 @@ const closeSettingsBtn = document.getElementById('closeSettingsBtn');
 const settingsNameInput = document.getElementById('settingsNameInput');
 const settingsSaveNameBtn = document.getElementById('settingsSaveNameBtn');
 const noiseSuppressionToggle = document.getElementById('noiseSuppressionToggle');
+const shareActivityToggle = document.getElementById('shareActivityToggle');
 const languageSelectEl = document.getElementById('languageSelect');
 const usernameModal = document.getElementById('usernameModal');
 const usernameInput = document.getElementById('usernameInput');
@@ -160,6 +161,21 @@ function getMyPersistentId() {
     localStorage.setItem('patycord.myId', id);
   }
   return id;
+}
+
+function getShareActivityEnabled() {
+  return localStorage.getItem('patycord.shareActivity') !== 'off'; // on by default, matches getting it in the first place
+}
+
+function setShareActivityEnabled(enabled) {
+  localStorage.setItem('patycord.shareActivity', enabled ? 'on' : 'off');
+  broadcastActivity(); // tell anyone already connected right away, rather than waiting for it to next change
+}
+
+// What to put in outgoing 'hello'/'activity' messages — never the real value
+// when sharing is turned off, regardless of what's actually running.
+function outgoingActivity() {
+  return getShareActivityEnabled() ? myActivity : null;
 }
 
 function getNoiseSuppressionEnabled() {
@@ -359,7 +375,7 @@ function setPeerActivity(id, activity) {
 // it up on their next presence probe (see probePresence).
 function broadcastActivity() {
   for (const conn of dataConnections.values()) {
-    if (conn.open) conn.send({ type: 'activity', activity: myActivity });
+    if (conn.open) conn.send({ type: 'activity', activity: outgoingActivity() });
   }
 }
 
@@ -818,7 +834,7 @@ function ensureDataConnection(id) {
   if (dataConnections.has(id)) return dataConnections.get(id);
   const conn = peer.connect(id);
   conn.on('open', () => {
-    conn.send({ type: 'hello', name: getMyUsername(), activity: myActivity });
+    conn.send({ type: 'hello', name: getMyUsername(), activity: outgoingActivity() });
     flushPendingMessages(id);
   });
   conn.on('data', (msg) => handleDataMessage(id, msg));
@@ -865,18 +881,27 @@ function connectTo(id) {
   meshCall(id);
 }
 
-// Anyone can act as a discovery hub for whoever joins through their ID: when a new
-// peer connects to us, we hand them the list of everyone already in the call (our
-// current `calls`), and they take it from there — calling each one directly. Existing
-// peers don't need to act on this; they'll just receive an incoming call from the
-// new joiner and auto-answer, same as any other call.
+// An accepted friend can act as a discovery hub for whoever joins through their ID:
+// when one connects to us, we hand them the list of everyone already in the call
+// (our current `calls`), and they take it from there — calling each one directly.
+// Existing peers don't need to act on this; they'll just receive an incoming call
+// from the new joiner and auto-answer, same as any other call.
+//
+// Anyone else who connects (an incoming call or friend request, typically) still
+// gets a `hello` — so e.g. an incoming call shows a readable name instead of a raw
+// ID — but never the roster or activity: peer IDs are unguessable, but there's no
+// reason to hand a stranger who's in a call with us, or let them make us auto-dial
+// whatever list of IDs they feel like sending.
 function handleIncomingDataConnection(conn) {
   conn.on('open', () => {
-    conn.send({ type: 'hello', name: getMyUsername(), activity: myActivity });
-    const roster = [...calls.keys()].filter((id) => id !== conn.peer);
-    conn.send({ type: 'roster', peers: roster });
-    for (const [otherId, otherConn] of dataConnections) {
-      if (otherId !== conn.peer) otherConn.send({ type: 'peer-joined', id: conn.peer });
+    const isFriend = acceptedFriends().some((f) => f.id === conn.peer);
+    conn.send({ type: 'hello', name: getMyUsername(), activity: isFriend ? outgoingActivity() : null });
+    if (isFriend) {
+      const roster = [...calls.keys()].filter((id) => id !== conn.peer);
+      conn.send({ type: 'roster', peers: roster });
+      for (const [otherId, otherConn] of dataConnections) {
+        if (otherId !== conn.peer) otherConn.send({ type: 'peer-joined', id: conn.peer });
+      }
     }
     dataConnections.set(conn.peer, conn);
     flushPendingMessages(conn.peer);
@@ -892,9 +917,12 @@ function handleDataMessage(fromId, msg) {
   } else if (msg.type === 'activity') {
     setPeerActivity(fromId, msg.activity);
   } else if (msg.type === 'roster') {
-    // A connected peer controls this list — validate before trusting it, and cap
-    // it so a misbehaving/malicious one can't fan us out into countless outbound calls.
-    if (Array.isArray(msg.peers)) {
+    // Only ever act on a roster from an accepted friend — our own send-side already
+    // withholds it from anyone else, but don't rely solely on other clients playing
+    // by that rule. A connected peer controls this list even then, so still validate
+    // it and cap it, so a misbehaving/malicious one can't fan us out into countless
+    // outbound calls.
+    if (acceptedFriends().some((f) => f.id === fromId) && Array.isArray(msg.peers)) {
       for (const id of msg.peers.slice(0, 50)) {
         if (typeof id === 'string') meshCall(id);
       }
@@ -1069,7 +1097,7 @@ function probePresence(id) {
   probe.on('open', () => {
     clearTimeout(timer);
     finish(true);
-    probe.send({ type: 'hello', name: getMyUsername(), activity: myActivity });
+    probe.send({ type: 'hello', name: getMyUsername(), activity: outgoingActivity() });
     // Give their reply (sent back from handleIncomingDataConnection on their end) a
     // moment to arrive before tearing the probe connection back down.
     setTimeout(() => { try { probe.close(); } catch {} }, 800);
@@ -1534,6 +1562,7 @@ copyBtn.addEventListener('click', () => {
 settingsBtn.addEventListener('click', () => {
   settingsNameInput.value = getMyUsername();
   noiseSuppressionToggle.checked = getNoiseSuppressionEnabled();
+  shareActivityToggle.checked = getShareActivityEnabled();
   settingsModal.hidden = false;
   appVersionEl.textContent = '';
   window.__TAURI__?.app.getVersion().then((v) => { appVersionEl.textContent = `patycord v${v}`; });
@@ -1541,6 +1570,9 @@ settingsBtn.addEventListener('click', () => {
 closeSettingsBtn.addEventListener('click', () => { settingsModal.hidden = true; });
 noiseSuppressionToggle.addEventListener('change', () => {
   setNoiseSuppressionEnabled(noiseSuppressionToggle.checked);
+});
+shareActivityToggle.addEventListener('change', () => {
+  setShareActivityEnabled(shareActivityToggle.checked);
 });
 settingsSaveNameBtn.addEventListener('click', () => {
   const name = settingsNameInput.value.trim();

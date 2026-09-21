@@ -19,6 +19,9 @@ const translations = {
     'settings.audio': 'Audio',
     'settings.noiseSuppression': 'Noise suppression',
     'settings.noiseSuppressionDesc': 'Filters background noise from your mic',
+    'settings.privacy': 'Privacy',
+    'settings.shareActivity': "Share what I'm playing",
+    'settings.shareActivityDesc': 'Lets friends see the game you currently have open',
     'settings.language': 'Language',
     'settings.connecting': 'connecting…',
 
@@ -117,6 +120,9 @@ const translations = {
     'settings.audio': 'Hang',
     'settings.noiseSuppression': 'Zajszűrés',
     'settings.noiseSuppressionDesc': 'Kiszűri a háttérzajt a mikrofonodból',
+    'settings.privacy': 'Adatvédelem',
+    'settings.shareActivity': 'Megosztom, mit játszom',
+    'settings.shareActivityDesc': 'Barátaid látják, milyen játékot futtatsz éppen',
     'settings.language': 'Nyelv',
     'settings.connecting': 'csatlakozás…',
 
