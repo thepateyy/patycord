@@ -463,8 +463,14 @@ function updateOutgoingRingState() {
 
 // --- UI ------------------------------------------------------------
 
+// Capped so an all-day call doesn't grow this into an unbounded string — old
+// entries just fall off the end instead of piling up for the life of the process.
+const LOG_LIMIT = 200;
+let logLines = [];
 function log(msg) {
-  statusEl.textContent = `[${new Date().toLocaleTimeString()}] ${msg}\n` + statusEl.textContent;
+  logLines.unshift(`[${new Date().toLocaleTimeString()}] ${msg}`);
+  if (logLines.length > LOG_LIMIT) logLines.length = LOG_LIMIT;
+  statusEl.textContent = logLines.join('\n');
 }
 
 // Errors people actually need to notice — brief on-screen banner, not just the log.
@@ -946,6 +952,7 @@ function addChatMessage(peerId, fromId, text) {
   if (!text) return;
   const history = chatHistories.get(peerId) || [];
   history.push({ fromId, text });
+  if (history.length > CHAT_HISTORY_LIMIT) history.splice(0, history.length - CHAT_HISTORY_LIMIT);
   chatHistories.set(peerId, history);
   saveChatHistories();
   if (peerId === openChatPeerId) renderChatMessage(fromId, text);
@@ -974,6 +981,7 @@ function flushPendingMessages(peerId) {
 function addCallChatMessage(fromId, text) {
   if (!text) return;
   callChatHistory.push({ fromId, text });
+  if (callChatHistory.length > CHAT_HISTORY_LIMIT) callChatHistory.splice(0, callChatHistory.length - CHAT_HISTORY_LIMIT);
   if (openChatPeerId === null && calls.size > 0) renderChatMessage(fromId, text);
 }
 
@@ -1040,6 +1048,14 @@ function sendChatMessage() {
 // currently open — doesn't ring anything on their end.
 function probePresence(id) {
   if (!peer || !id || calls.has(id)) return;
+  // Already have a live connection (e.g. an open DM) — that's a stronger signal than
+  // a fresh probe anyway, and opening one is pure churn: a whole extra WebRTC
+  // PeerConnection + DataChannel handshake, held open, then torn down again.
+  const existing = dataConnections.get(id);
+  if (existing?.open) {
+    if (presence.get(id) !== true) { presence.set(id, true); scheduleRenderPeerList(); }
+    return;
+  }
   let settled = false;
   const probe = peer.connect(id, { reliable: false });
   const finish = (online) => {
@@ -1203,7 +1219,7 @@ function addScreenTile(peerId, call) {
   tile.appendChild(label);
   tile.appendChild(fullscreenBtn);
   screenGridEl.appendChild(tile);
-  screenTiles.set(peerId, { call, tileEl: tile });
+  screenTiles.set(peerId, { call, tileEl: tile, videoEl: video });
   playScreenShareSound(true); // same cue the sharer hears on their end — parity, not just for them
 
   call.on('stream', (stream) => { video.srcObject = stream; });
@@ -1216,6 +1232,7 @@ function removeScreenTile(peerId) {
   if (!entry) return;
   if (document.fullscreenElement === entry.tileEl) document.exitFullscreen();
   entry.call.close(); // no-op if it's already closing/closed — this is often called from that path
+  entry.videoEl.srcObject = null; // release the remote stream immediately rather than waiting on GC
   entry.tileEl.remove();
   screenTiles.delete(peerId);
   playScreenShareSound(false);
