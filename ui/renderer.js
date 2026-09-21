@@ -1657,9 +1657,11 @@ async function checkForUpdates() {
     updateBannerTextEl.textContent = t('update.available', { version: update.version, current: update.currentVersion });
     updateBannerTextEl.removeAttribute('data-i18n'); // same reasoning as myIdEl above
     const notes = (update.body || '').trim();
+    const notesTitle = t('update.available', { version: update.version, current: update.currentVersion });
     updateBannerNotesBtn.hidden = !notes;
-    updateBannerNotesBtn.onclick = () => openReleaseNotes(t('update.available', { version: update.version, current: update.currentVersion }), notes);
+    updateBannerNotesBtn.onclick = () => openReleaseNotes(notesTitle, notes);
     updateBannerEl.hidden = false;
+    if (notes) openReleaseNotes(notesTitle, notes); // shown up front — the button above just reopens it if dismissed
     updateBannerBtn.addEventListener('click', async () => {
       updateBannerBtn.disabled = true;
       updateBannerBtn.textContent = t('update.updating');
@@ -1697,11 +1699,13 @@ function showWhatsNewIfJustUpdated() {
     return;
   }
   justUpdatedInfo = info;
-  whatsNewTextEl.textContent = t('whatsNew.title', { version: info.version });
+  const notesTitle = t('whatsNew.title', { version: info.version });
+  whatsNewTextEl.textContent = notesTitle;
   const notes = (info.notes || '').trim();
   whatsNewNotesBtn.hidden = !notes;
-  whatsNewNotesBtn.onclick = () => openReleaseNotes(t('whatsNew.title', { version: info.version }), notes);
+  whatsNewNotesBtn.onclick = () => openReleaseNotes(notesTitle, notes);
   whatsNewBannerEl.hidden = false;
+  if (notes) openReleaseNotes(notesTitle, notes); // shown up front — the button above just reopens it if dismissed
   whatsNewBtn.addEventListener('click', () => {
     whatsNewBannerEl.hidden = true;
     justUpdatedInfo = null;
