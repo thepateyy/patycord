@@ -5,14 +5,34 @@ fn allow_mic_permission(window: &tauri::WebviewWindow) {
     };
     use webview2_com::PermissionRequestedEventHandler;
 
-    let _ = window.with_webview(|webview| unsafe {
+    // Scoped to patycord's own origin so this can never silently hand mic access to
+    // anything else that might end up loaded in this webview — there's no in-app
+    // navigation today (no <a href>, no window.open, CSP has no room for it either),
+    // so this is currently equivalent to "always", but that's the point: a future
+    // change that *does* introduce navigation can't quietly inherit mic access just
+    // by sharing this window. Falls back to the old always-allow behavior if the
+    // window's own URL can't be read for some reason, rather than breaking mic
+    // access entirely over an edge case that shouldn't happen.
+    let own_origin = window.url().ok().map(|u| u.origin());
+
+    let _ = window.with_webview(move |webview| unsafe {
         let core_webview = webview.controller().CoreWebView2().expect("no CoreWebView2");
         let mut token: i64 = 0;
-        let handler = PermissionRequestedEventHandler::create(Box::new(|_sender, args| {
+        let handler = PermissionRequestedEventHandler::create(Box::new(move |_sender, args| {
             let Some(args) = args else { return Ok(()) };
             let mut kind = Default::default();
             args.PermissionKind(&mut kind)?;
-            if kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE {
+            if kind != COREWEBVIEW2_PERMISSION_KIND_MICROPHONE {
+                return Ok(());
+            }
+            let mut uri = Default::default();
+            args.Uri(&mut uri)?;
+            let uri = webview2_com::take_pwstr(uri);
+            let same_origin = match (&own_origin, tauri::Url::parse(&uri)) {
+                (Some(expected), Ok(requested)) => requested.origin() == *expected,
+                _ => true, // couldn't determine one side or the other — fail open, same as before this change
+            };
+            if same_origin {
                 args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
             }
             Ok(())
@@ -128,11 +148,102 @@ fn detect_running_game() -> Option<String> {
     running_process_names().into_iter().find(|name| games.contains(name))
 }
 
+// A single encrypted-at-rest blob (one JSON object holding friends, chat history,
+// pending messages, persistent ID — everything the frontend used to keep in plain
+// localStorage) instead of per-key values, so there's one load and one save call
+// instead of wiring every localStorage.getItem/setItem through IPC individually.
+// Encrypted with Windows DPAPI (CryptProtectData/CryptUnprotectData), which ties
+// the key to the current Windows user account — something with same-user file
+// access but a different identity (or the file copied elsewhere) can't decrypt it,
+// unlike an XOR/"obfuscation" scheme whose key would have to live right next to
+// the data it protects.
+#[cfg(target_os = "windows")]
+mod secure_store {
+    use std::fs;
+    use std::path::PathBuf;
+    use tauri::Manager;
+
+    fn store_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+        let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        Ok(dir.join("secure_store.bin"))
+    }
+
+    fn protect(plaintext: &[u8]) -> Result<Vec<u8>, String> {
+        use windows::Win32::Foundation::{HLOCAL, LocalFree};
+        use windows::Win32::Security::Cryptography::{CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData};
+        use windows::core::PCWSTR;
+        unsafe {
+            let mut input = plaintext.to_vec();
+            let blob_in = CRYPT_INTEGER_BLOB { cbData: input.len() as u32, pbData: input.as_mut_ptr() };
+            let mut blob_out = CRYPT_INTEGER_BLOB::default();
+            CryptProtectData(&blob_in, PCWSTR::null(), None, None, None, CRYPTPROTECT_UI_FORBIDDEN, &mut blob_out)
+                .map_err(|e| e.to_string())?;
+            let result = std::slice::from_raw_parts(blob_out.pbData, blob_out.cbData as usize).to_vec();
+            let _ = LocalFree(Some(HLOCAL(blob_out.pbData as *mut _)));
+            Ok(result)
+        }
+    }
+
+    fn unprotect(ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+        use windows::Win32::Foundation::{HLOCAL, LocalFree};
+        use windows::Win32::Security::Cryptography::{CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptUnprotectData};
+        unsafe {
+            let mut input = ciphertext.to_vec();
+            let blob_in = CRYPT_INTEGER_BLOB { cbData: input.len() as u32, pbData: input.as_mut_ptr() };
+            let mut blob_out = CRYPT_INTEGER_BLOB::default();
+            CryptUnprotectData(&blob_in, None, None, None, None, CRYPTPROTECT_UI_FORBIDDEN, &mut blob_out)
+                .map_err(|e| e.to_string())?;
+            let result = std::slice::from_raw_parts(blob_out.pbData, blob_out.cbData as usize).to_vec();
+            let _ = LocalFree(Some(HLOCAL(blob_out.pbData as *mut _)));
+            Ok(result)
+        }
+    }
+
+    #[tauri::command]
+    pub fn load_secure_store(app: tauri::AppHandle) -> Result<String, String> {
+        let path = store_path(&app)?;
+        let Ok(ciphertext) = fs::read(&path) else {
+            return Ok("{}".to_string()); // first run, or nothing saved yet
+        };
+        let plaintext = unprotect(&ciphertext)?;
+        String::from_utf8(plaintext).map_err(|e| e.to_string())
+    }
+
+    #[tauri::command]
+    pub fn save_secure_store(app: tauri::AppHandle, data: String) -> Result<(), String> {
+        let path = store_path(&app)?;
+        let ciphertext = protect(data.as_bytes())?;
+        fs::write(&path, ciphertext).map_err(|e| e.to_string())
+    }
+}
+
+// Non-Windows stand-in so the commands still exist to register (patycord doesn't
+// currently ship for anything but Windows — see the rest of this file's native
+// integrations — but this keeps a build from that platform merely *not
+// persisting* instead of failing to compile).
+#[cfg(not(target_os = "windows"))]
+mod secure_store {
+    #[tauri::command]
+    pub fn load_secure_store(_app: tauri::AppHandle) -> Result<String, String> {
+        Ok("{}".to_string())
+    }
+
+    #[tauri::command]
+    pub fn save_secure_store(_app: tauri::AppHandle, _data: String) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .invoke_handler(tauri::generate_handler![
+            secure_store::load_secure_store,
+            secure_store::save_secure_store
+        ])
         .setup(|_app| {
             #[cfg(target_os = "windows")]
             {

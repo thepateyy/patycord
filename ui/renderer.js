@@ -11,6 +11,7 @@ const closeSettingsBtn = document.getElementById('closeSettingsBtn');
 const settingsNameInput = document.getElementById('settingsNameInput');
 const settingsSaveNameBtn = document.getElementById('settingsSaveNameBtn');
 const noiseSuppressionToggle = document.getElementById('noiseSuppressionToggle');
+const shareActivityToggle = document.getElementById('shareActivityToggle');
 const languageSelectEl = document.getElementById('languageSelect');
 const usernameModal = document.getElementById('usernameModal');
 const usernameInput = document.getElementById('usernameInput');
@@ -77,7 +78,12 @@ const outgoingScreenCalls = new Map(); // peerId -> MediaConnection, us sharing 
 const screenTiles = new Map(); // peerId -> { call, tileEl }, someone else's screen we're viewing
 const remoteNames = new Map(); // peerId -> name they told us about themselves, live
 const pendingFriendRequests = new Map(); // peerId -> name, awaiting Accept/Decline
-const chatHistories = new Map(); // peerId -> [{ fromId, text }], per-friend DMs — independent of calls, in-memory only
+// Populated for real by initSecureStore() before anything else runs (see the bottom
+// of this file) — empty here only because loadChatHistories()/loadPendingMessages()
+// need secureStore, which is loaded asynchronously and can't be ready yet at the
+// point module-level code runs synchronously.
+let chatHistories = new Map(); // peerId -> [{ fromId, text }], per-friend DMs — independent of calls, persisted encrypted (see secureStore)
+let pendingMessages = new Map(); // peerId -> [{ type, scope, text }], DMs sent while they were offline — flushed once a connection to them opens
 let openChatPeerId = null; // whichever friend's DM thread is currently showing, or null (showing call chat / nothing)
 let callChatHistory = []; // shared broadcast thread for whoever's in the current call — resets when the call ends, like it always has
 let wasInCall = false; // so renderCallPanel() can detect the moment a call actually ends, to reset callChatHistory
@@ -146,17 +152,104 @@ const ICONS = {
   phone: icon('<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>'),
   phoneOff: icon('<path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67m-2.67-3.34a19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91"/><line x1="23" y1="1" x2="1" y2="23"/>'),
   chat: icon('<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>'),
+  maximize: icon('<path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>'),
+  minimize: icon('<path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/>'),
 };
+
+// --- secure store --------------------------------------------------
+// Everything genuinely sensitive (identity, friends, chat history, queued DMs)
+// lives in one encrypted-at-rest blob instead of plain localStorage — see
+// secure_store::{load,save}_secure_store in lib.rs. Encrypted with Windows DPAPI,
+// which ties the key to the current Windows user account, so a copy of the file
+// (or another process reading it directly) can't be decrypted without also being
+// that user. Cosmetic prefs (language, noise suppression, screen-share quality,
+// ...) aren't worth the complexity and stay in plain localStorage.
+const SECURE_STORE_KEYS = ['myId', 'myUsername', 'friends', 'chatHistories', 'pendingMessages'];
+const secureStore = {}; // populated by initSecureStore() before anything else runs
+
+function readLegacyPlaintextStore() {
+  const result = {};
+  for (const key of SECURE_STORE_KEYS) {
+    const raw = localStorage.getItem(`patycord.${key}`);
+    if (raw === null) continue;
+    if (key === 'myId' || key === 'myUsername') {
+      result[key] = raw; // stored as a bare string, not JSON
+    } else {
+      try { result[key] = JSON.parse(raw); } catch { /* skip a corrupt entry */ }
+    }
+  }
+  return result;
+}
+
+function clearLegacyPlaintextStore() {
+  for (const key of SECURE_STORE_KEYS) localStorage.removeItem(`patycord.${key}`);
+}
+
+async function initSecureStore() {
+  const invoke = window.__TAURI__?.core?.invoke;
+  if (!invoke) {
+    // No Tauri backend to encrypt with (browser-testing via `npm run serve`) — just
+    // read the old plaintext keys directly so this path stays testable.
+    Object.assign(secureStore, readLegacyPlaintextStore());
+    return;
+  }
+  try {
+    Object.assign(secureStore, JSON.parse(await invoke('load_secure_store')));
+  } catch {
+    // Corrupt or unreadable — start fresh rather than block the app from opening.
+  }
+  // One-time migration: anything still sitting in plaintext localStorage from
+  // before this existed, that the encrypted store doesn't already have, moves over
+  // and gets wiped from plaintext.
+  const legacy = readLegacyPlaintextStore();
+  let migrated = false;
+  for (const key of SECURE_STORE_KEYS) {
+    if (secureStore[key] !== undefined || legacy[key] === undefined) continue;
+    secureStore[key] = legacy[key];
+    migrated = true;
+  }
+  if (migrated) {
+    clearLegacyPlaintextStore();
+    saveSecureStore();
+  }
+}
+
+function saveSecureStore() {
+  const invoke = window.__TAURI__?.core?.invoke;
+  if (invoke) {
+    invoke('save_secure_store', { data: JSON.stringify(secureStore) }).catch(() => {});
+    return;
+  }
+  // Browser-testing fallback — mirror into plain localStorage.
+  for (const key of SECURE_STORE_KEYS) {
+    if (secureStore[key] === undefined) continue;
+    localStorage.setItem(`patycord.${key}`, key === 'myId' || key === 'myUsername' ? secureStore[key] : JSON.stringify(secureStore[key]));
+  }
+}
 
 // --- persistent identity & friends list -------------------------------
 
 function getMyPersistentId() {
-  let id = localStorage.getItem('patycord.myId');
-  if (!id) {
-    id = 'p-' + crypto.randomUUID();
-    localStorage.setItem('patycord.myId', id);
+  if (!secureStore.myId) {
+    secureStore.myId = 'p-' + crypto.randomUUID();
+    saveSecureStore();
   }
-  return id;
+  return secureStore.myId;
+}
+
+function getShareActivityEnabled() {
+  return localStorage.getItem('patycord.shareActivity') !== 'off'; // on by default, matches getting it in the first place
+}
+
+function setShareActivityEnabled(enabled) {
+  localStorage.setItem('patycord.shareActivity', enabled ? 'on' : 'off');
+  broadcastActivity(); // tell anyone already connected right away, rather than waiting for it to next change
+}
+
+// What to put in outgoing 'hello'/'activity' messages — never the real value
+// when sharing is turned off, regardless of what's actually running.
+function outgoingActivity() {
+  return getShareActivityEnabled() ? myActivity : null;
 }
 
 function getNoiseSuppressionEnabled() {
@@ -189,11 +282,12 @@ function setScreenShareFps(fps) {
 }
 
 function getMyUsername() {
-  return localStorage.getItem('patycord.myUsername') || '';
+  return secureStore.myUsername || '';
 }
 
 function setMyUsername(name) {
-  localStorage.setItem('patycord.myUsername', name);
+  secureStore.myUsername = name;
+  saveSecureStore();
   myNameEl.textContent = name;
   profileAvatarEl.textContent = initialsFor(name);
   profileAvatarEl.style.background = colorForId(getMyPersistentId());
@@ -224,17 +318,40 @@ function promptForUsername() {
 }
 
 function loadFriends() {
-  try {
-    const friends = JSON.parse(localStorage.getItem('patycord.friends') || '[]');
-    // Defensively drop any bad entries a past bug might have saved (empty id, etc).
-    return friends.filter((f) => f && typeof f.id === 'string' && f.id.trim());
-  } catch {
-    return [];
-  }
+  const friends = Array.isArray(secureStore.friends) ? secureStore.friends : [];
+  // Defensively drop any bad entries a past bug might have saved (empty id, etc).
+  return friends.filter((f) => f && typeof f.id === 'string' && f.id.trim());
 }
 
 function saveFriends(friends) {
-  localStorage.setItem('patycord.friends', JSON.stringify(friends));
+  secureStore.friends = friends;
+  saveSecureStore();
+}
+
+const CHAT_HISTORY_LIMIT = 300; // per peer — plenty for scrollback, bounded so the store can't grow forever
+
+function loadChatHistories() {
+  const raw = secureStore.chatHistories && typeof secureStore.chatHistories === 'object' ? secureStore.chatHistories : {};
+  return new Map(Object.entries(raw).filter(([id, msgs]) => id && Array.isArray(msgs)));
+}
+
+function saveChatHistories() {
+  secureStore.chatHistories = Object.fromEntries(
+    [...chatHistories].map(([id, msgs]) => [id, msgs.slice(-CHAT_HISTORY_LIMIT)])
+  );
+  saveSecureStore();
+}
+
+const PENDING_MESSAGE_LIMIT = 50; // per peer — a permanently-offline/removed friend shouldn't grow this forever
+
+function loadPendingMessages() {
+  const raw = secureStore.pendingMessages && typeof secureStore.pendingMessages === 'object' ? secureStore.pendingMessages : {};
+  return new Map(Object.entries(raw).filter(([id, msgs]) => id && Array.isArray(msgs)));
+}
+
+function savePendingMessages() {
+  secureStore.pendingMessages = Object.fromEntries(pendingMessages);
+  saveSecureStore();
 }
 
 // Entries saved before the pending/accepted split have no `status` field —
@@ -322,7 +439,7 @@ function setPeerActivity(id, activity) {
 // it up on their next presence probe (see probePresence).
 function broadcastActivity() {
   for (const conn of dataConnections.values()) {
-    if (conn.open) conn.send({ type: 'activity', activity: myActivity });
+    if (conn.open) conn.send({ type: 'activity', activity: outgoingActivity() });
   }
 }
 
@@ -331,6 +448,9 @@ function removeFriend(id) {
   presence.delete(id); // only ever meaningful for someone on the friends list
   activityByPeer.delete(id);
   chatHistories.delete(id);
+  saveChatHistories();
+  pendingMessages.delete(id);
+  savePendingMessages();
   if (openChatPeerId === id) closeChat();
   if (!calls.has(id)) { dataConnections.get(id)?.close(); dataConnections.delete(id); } // keep it if still mid-call
   renderPeerList();
@@ -400,10 +520,37 @@ function stopRinging() {
   ringInterval = null;
 }
 
+// Ringback for the caller's side — mirrors startRinging/stopRinging above but for
+// calls we placed ourselves that haven't connected yet (falling two-tone, vs. the
+// incoming ring's rising one, so the two are distinguishable by ear). Kept in sync
+// from wireCall/attachRemoteStream/removeCall, the three places a call's "dialing"
+// state (has a `call`, no `audioEl` yet) can change.
+let outgoingRingInterval = null;
+function playOutgoingRing() {
+  playTone(660, 220, { gain: 0.16 });
+  playTone(520, 220, { gain: 0.16, delayMs: 220 });
+}
+function updateOutgoingRingState() {
+  const dialing = [...calls.values()].some((entry) => entry.outgoing && entry.call && !entry.audioEl);
+  if (dialing && !outgoingRingInterval) {
+    playOutgoingRing();
+    outgoingRingInterval = setInterval(playOutgoingRing, 2000);
+  } else if (!dialing && outgoingRingInterval) {
+    clearInterval(outgoingRingInterval);
+    outgoingRingInterval = null;
+  }
+}
+
 // --- UI ------------------------------------------------------------
 
+// Capped so an all-day call doesn't grow this into an unbounded string — old
+// entries just fall off the end instead of piling up for the life of the process.
+const LOG_LIMIT = 200;
+let logLines = [];
 function log(msg) {
-  statusEl.textContent = `[${new Date().toLocaleTimeString()}] ${msg}\n` + statusEl.textContent;
+  logLines.unshift(`[${new Date().toLocaleTimeString()}] ${msg}`);
+  if (logLines.length > LOG_LIMIT) logLines.length = LOG_LIMIT;
+  statusEl.textContent = logLines.join('\n');
 }
 
 // Errors people actually need to notice — brief on-screen banner, not just the log.
@@ -706,6 +853,7 @@ function attachRemoteStream(peerId, stream) {
   const entry = calls.get(peerId) || {};
   entry.audioEl = audio;
   calls.set(peerId, entry);
+  updateOutgoingRingState();
   renderPeerList();
 }
 
@@ -727,14 +875,17 @@ function removeCall(peerId) {
     entry.audioEl.srcObject = null;
   }
   calls.delete(peerId);
+  updateOutgoingRingState();
   renderPeerList();
   log(t('log.disconnected', { id: peerId }));
 }
 
-function wireCall(call) {
+function wireCall(call, { outgoing = false } = {}) {
   const entry = calls.get(call.peer) || {};
   entry.call = call;
+  if (outgoing) entry.outgoing = true; // so updateOutgoingRingState only rings back for calls *we* placed
   calls.set(call.peer, entry);
+  updateOutgoingRingState();
   renderPeerList();
 
   call.on('stream', (remoteStream) => attachRemoteStream(call.peer, remoteStream));
@@ -746,7 +897,10 @@ function wireCall(call) {
 function ensureDataConnection(id) {
   if (dataConnections.has(id)) return dataConnections.get(id);
   const conn = peer.connect(id);
-  conn.on('open', () => conn.send({ type: 'hello', name: getMyUsername(), activity: myActivity }));
+  conn.on('open', () => {
+    conn.send({ type: 'hello', name: getMyUsername(), activity: outgoingActivity() });
+    flushPendingMessages(id);
+  });
   conn.on('data', (msg) => handleDataMessage(id, msg));
   conn.on('error', () => {}); // connectivity errors surface via the call itself
   conn.on('close', () => dataConnections.delete(id));
@@ -771,7 +925,7 @@ function meshCall(id) {
   if (!peer || id === peer.id || calls.has(id)) return;
   ensureDataConnection(id);
   const call = peer.call(id, processedStream);
-  wireCall(call);
+  wireCall(call, { outgoing: true });
 
   // If they're offline (or never accept), the call just hangs — give up after a while
   // instead of leaving a permanently "connecting" entry.
@@ -791,20 +945,30 @@ function connectTo(id) {
   meshCall(id);
 }
 
-// Anyone can act as a discovery hub for whoever joins through their ID: when a new
-// peer connects to us, we hand them the list of everyone already in the call (our
-// current `calls`), and they take it from there — calling each one directly. Existing
-// peers don't need to act on this; they'll just receive an incoming call from the
-// new joiner and auto-answer, same as any other call.
+// An accepted friend can act as a discovery hub for whoever joins through their ID:
+// when one connects to us, we hand them the list of everyone already in the call
+// (our current `calls`), and they take it from there — calling each one directly.
+// Existing peers don't need to act on this; they'll just receive an incoming call
+// from the new joiner and auto-answer, same as any other call.
+//
+// Anyone else who connects (an incoming call or friend request, typically) still
+// gets a `hello` — so e.g. an incoming call shows a readable name instead of a raw
+// ID — but never the roster or activity: peer IDs are unguessable, but there's no
+// reason to hand a stranger who's in a call with us, or let them make us auto-dial
+// whatever list of IDs they feel like sending.
 function handleIncomingDataConnection(conn) {
   conn.on('open', () => {
-    conn.send({ type: 'hello', name: getMyUsername(), activity: myActivity });
-    const roster = [...calls.keys()].filter((id) => id !== conn.peer);
-    conn.send({ type: 'roster', peers: roster });
-    for (const [otherId, otherConn] of dataConnections) {
-      if (otherId !== conn.peer) otherConn.send({ type: 'peer-joined', id: conn.peer });
+    const isFriend = acceptedFriends().some((f) => f.id === conn.peer);
+    conn.send({ type: 'hello', name: getMyUsername(), activity: isFriend ? outgoingActivity() : null });
+    if (isFriend) {
+      const roster = [...calls.keys()].filter((id) => id !== conn.peer);
+      conn.send({ type: 'roster', peers: roster });
+      for (const [otherId, otherConn] of dataConnections) {
+        if (otherId !== conn.peer) otherConn.send({ type: 'peer-joined', id: conn.peer });
+      }
     }
     dataConnections.set(conn.peer, conn);
+    flushPendingMessages(conn.peer);
   });
   conn.on('data', (msg) => handleDataMessage(conn.peer, msg));
   conn.on('close', () => dataConnections.delete(conn.peer));
@@ -817,9 +981,12 @@ function handleDataMessage(fromId, msg) {
   } else if (msg.type === 'activity') {
     setPeerActivity(fromId, msg.activity);
   } else if (msg.type === 'roster') {
-    // A connected peer controls this list — validate before trusting it, and cap
-    // it so a misbehaving/malicious one can't fan us out into countless outbound calls.
-    if (Array.isArray(msg.peers)) {
+    // Only ever act on a roster from an accepted friend — our own send-side already
+    // withholds it from anyone else, but don't rely solely on other clients playing
+    // by that rule. A connected peer controls this list even then, so still validate
+    // it and cap it, so a misbehaving/malicious one can't fan us out into countless
+    // outbound calls.
+    if (acceptedFriends().some((f) => f.id === fromId) && Array.isArray(msg.peers)) {
       for (const id of msg.peers.slice(0, 50)) {
         if (typeof id === 'string') meshCall(id);
       }
@@ -877,13 +1044,36 @@ function addChatMessage(peerId, fromId, text) {
   if (!text) return;
   const history = chatHistories.get(peerId) || [];
   history.push({ fromId, text });
+  if (history.length > CHAT_HISTORY_LIMIT) history.splice(0, history.length - CHAT_HISTORY_LIMIT);
   chatHistories.set(peerId, history);
+  saveChatHistories();
   if (peerId === openChatPeerId) renderChatMessage(fromId, text);
+}
+
+// Queues a DM for `peerId` so it survives them being offline (or us restarting
+// before they come back) — delivered whenever a connection to them next opens,
+// see flushPendingMessages, called from both places a data connection can open
+// (ensureDataConnection and handleIncomingDataConnection).
+function queueMessage(peerId, message) {
+  const queue = pendingMessages.get(peerId) || [];
+  queue.push(message);
+  pendingMessages.set(peerId, queue.slice(-PENDING_MESSAGE_LIMIT));
+  savePendingMessages();
+}
+
+function flushPendingMessages(peerId) {
+  const conn = dataConnections.get(peerId);
+  const queue = pendingMessages.get(peerId);
+  if (!conn?.open || !queue?.length) return;
+  for (const message of queue) conn.send(message);
+  pendingMessages.delete(peerId);
+  savePendingMessages();
 }
 
 function addCallChatMessage(fromId, text) {
   if (!text) return;
   callChatHistory.push({ fromId, text });
+  if (callChatHistory.length > CHAT_HISTORY_LIMIT) callChatHistory.splice(0, callChatHistory.length - CHAT_HISTORY_LIMIT);
   if (openChatPeerId === null && calls.size > 0) renderChatMessage(fromId, text);
 }
 
@@ -933,10 +1123,9 @@ function sendChatMessage() {
   if (!text) return;
   if (openChatPeerId !== null) {
     const peerId = openChatPeerId;
-    const conn = ensureDataConnection(peerId);
-    const send = () => conn.send({ type: 'chat', scope: 'dm', text });
-    if (conn.open) send();
-    else conn.on('open', send);
+    ensureDataConnection(peerId);
+    queueMessage(peerId, { type: 'chat', scope: 'dm', text });
+    flushPendingMessages(peerId); // delivers now if already connected; otherwise waits for 'open'
     addChatMessage(peerId, peer.id, text);
   } else if (calls.size > 0) {
     for (const id of calls.keys()) dataConnections.get(id)?.send({ type: 'chat', scope: 'call', text });
@@ -951,6 +1140,14 @@ function sendChatMessage() {
 // currently open — doesn't ring anything on their end.
 function probePresence(id) {
   if (!peer || !id || calls.has(id)) return;
+  // Already have a live connection (e.g. an open DM) — that's a stronger signal than
+  // a fresh probe anyway, and opening one is pure churn: a whole extra WebRTC
+  // PeerConnection + DataChannel handshake, held open, then torn down again.
+  const existing = dataConnections.get(id);
+  if (existing?.open) {
+    if (presence.get(id) !== true) { presence.set(id, true); scheduleRenderPeerList(); }
+    return;
+  }
   let settled = false;
   const probe = peer.connect(id, { reliable: false });
   const finish = (online) => {
@@ -964,7 +1161,7 @@ function probePresence(id) {
   probe.on('open', () => {
     clearTimeout(timer);
     finish(true);
-    probe.send({ type: 'hello', name: getMyUsername(), activity: myActivity });
+    probe.send({ type: 'hello', name: getMyUsername(), activity: outgoingActivity() });
     // Give their reply (sent back from handleIncomingDataConnection on their end) a
     // moment to arrive before tearing the probe connection back down.
     setTimeout(() => { try { probe.close(); } catch {} }, 800);
@@ -1093,10 +1290,29 @@ function addScreenTile(peerId, call) {
   const label = document.createElement('div');
   label.className = 'label';
   label.textContent = t('screen.label', { name: friendName(peerId) });
+
+  const fullscreenBtn = document.createElement('button');
+  fullscreenBtn.className = 'fullscreenBtn ghost';
+  fullscreenBtn.title = t('screen.fullscreen');
+  fullscreenBtn.innerHTML = ICONS.maximize;
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement === tile) document.exitFullscreen();
+    else tile.requestFullscreen().catch(() => {});
+  };
+  fullscreenBtn.addEventListener('click', toggleFullscreen);
+  video.addEventListener('dblclick', toggleFullscreen);
+  tile.addEventListener('fullscreenchange', () => {
+    const isFullscreen = document.fullscreenElement === tile;
+    fullscreenBtn.innerHTML = isFullscreen ? ICONS.minimize : ICONS.maximize;
+    fullscreenBtn.title = isFullscreen ? t('screen.windowed') : t('screen.fullscreen');
+  });
+
   tile.appendChild(video);
   tile.appendChild(label);
+  tile.appendChild(fullscreenBtn);
   screenGridEl.appendChild(tile);
-  screenTiles.set(peerId, { call, tileEl: tile });
+  screenTiles.set(peerId, { call, tileEl: tile, videoEl: video });
+  playScreenShareSound(true); // same cue the sharer hears on their end — parity, not just for them
 
   call.on('stream', (stream) => { video.srcObject = stream; });
   call.on('close', () => removeScreenTile(peerId));
@@ -1106,9 +1322,12 @@ function addScreenTile(peerId, call) {
 function removeScreenTile(peerId) {
   const entry = screenTiles.get(peerId);
   if (!entry) return;
+  if (document.fullscreenElement === entry.tileEl) document.exitFullscreen();
   entry.call.close(); // no-op if it's already closing/closed — this is often called from that path
+  entry.videoEl.srcObject = null; // release the remote stream immediately rather than waiting on GC
   entry.tileEl.remove();
   screenTiles.delete(peerId);
+  playScreenShareSound(false);
 }
 
 // Only accept a screen share from someone we're already voice-connected to — an
@@ -1407,6 +1626,7 @@ copyBtn.addEventListener('click', () => {
 settingsBtn.addEventListener('click', () => {
   settingsNameInput.value = getMyUsername();
   noiseSuppressionToggle.checked = getNoiseSuppressionEnabled();
+  shareActivityToggle.checked = getShareActivityEnabled();
   settingsModal.hidden = false;
   appVersionEl.textContent = '';
   window.__TAURI__?.app.getVersion().then((v) => { appVersionEl.textContent = `patycord v${v}`; });
@@ -1414,6 +1634,9 @@ settingsBtn.addEventListener('click', () => {
 closeSettingsBtn.addEventListener('click', () => { settingsModal.hidden = true; });
 noiseSuppressionToggle.addEventListener('change', () => {
   setNoiseSuppressionEnabled(noiseSuppressionToggle.checked);
+});
+shareActivityToggle.addEventListener('change', () => {
+  setShareActivityEnabled(shareActivityToggle.checked);
 });
 settingsSaveNameBtn.addEventListener('click', () => {
   const name = settingsNameInput.value.trim();
@@ -1530,9 +1753,11 @@ async function checkForUpdates() {
     updateBannerTextEl.textContent = t('update.available', { version: update.version, current: update.currentVersion });
     updateBannerTextEl.removeAttribute('data-i18n'); // same reasoning as myIdEl above
     const notes = (update.body || '').trim();
+    const notesTitle = t('update.available', { version: update.version, current: update.currentVersion });
     updateBannerNotesBtn.hidden = !notes;
-    updateBannerNotesBtn.onclick = () => openReleaseNotes(t('update.available', { version: update.version, current: update.currentVersion }), notes);
+    updateBannerNotesBtn.onclick = () => openReleaseNotes(notesTitle, notes);
     updateBannerEl.hidden = false;
+    if (notes) openReleaseNotes(notesTitle, notes); // shown up front — the button above just reopens it if dismissed
     updateBannerBtn.addEventListener('click', async () => {
       updateBannerBtn.disabled = true;
       updateBannerBtn.textContent = t('update.updating');
@@ -1570,33 +1795,45 @@ function showWhatsNewIfJustUpdated() {
     return;
   }
   justUpdatedInfo = info;
-  whatsNewTextEl.textContent = t('whatsNew.title', { version: info.version });
+  const notesTitle = t('whatsNew.title', { version: info.version });
+  whatsNewTextEl.textContent = notesTitle;
   const notes = (info.notes || '').trim();
   whatsNewNotesBtn.hidden = !notes;
-  whatsNewNotesBtn.onclick = () => openReleaseNotes(t('whatsNew.title', { version: info.version }), notes);
+  whatsNewNotesBtn.onclick = () => openReleaseNotes(notesTitle, notes);
   whatsNewBannerEl.hidden = false;
+  if (notes) openReleaseNotes(notesTitle, notes); // shown up front — the button above just reopens it if dismissed
   whatsNewBtn.addEventListener('click', () => {
     whatsNewBannerEl.hidden = true;
     justUpdatedInfo = null;
   }, { once: true });
 }
 
-applyStaticTranslations(); // before anything renders, including the username prompt modal
-if (getMyUsername()) setMyUsername(getMyUsername());
-saveFriends(loadFriends()); // persist the cleanup of any bad entries from past bugs
-renderPeerList();
-showWhatsNewIfJustUpdated();
+// Everything below depends on secureStore being loaded first (friends, chat
+// history, the persistent ID) — wrapped in one async entry point rather than
+// scattering awaits through what used to be plain top-level statements.
+async function init() {
+  applyStaticTranslations(); // before anything renders, including the username prompt modal
+  await initSecureStore();
+  chatHistories = loadChatHistories();
+  pendingMessages = loadPendingMessages();
+  if (getMyUsername()) setMyUsername(getMyUsername());
+  saveFriends(loadFriends()); // persist the cleanup of any bad entries from past bugs
+  renderPeerList();
+  showWhatsNewIfJustUpdated();
 
-// Rust side polls running processes and tells us if a known game is open —
-// focused or just running in the background (or null if none is) — only fires in
-// the real Tauri app, never in a plain browser. We just relay whatever it says to
-// friends; see lib.rs for the actual detection against ui/game-names.json.
-window.__TAURI__?.event?.listen('active-app-changed', (event) => {
-  myActivity = typeof event.payload === 'string' ? event.payload : null;
-  renderMyActivity();
-  scheduleRenderPeerList();
-  broadcastActivity();
-});
+  // Rust side polls running processes and tells us if a known game is open —
+  // focused or just running in the background (or null if none is) — only fires in
+  // the real Tauri app, never in a plain browser. We just relay whatever it says to
+  // friends; see lib.rs for the actual detection against ui/game-names.json.
+  window.__TAURI__?.event?.listen('active-app-changed', (event) => {
+    myActivity = typeof event.payload === 'string' ? event.payload : null;
+    renderMyActivity();
+    scheduleRenderPeerList();
+    broadcastActivity();
+  });
 
-main();
-checkForUpdates();
+  main();
+  checkForUpdates();
+}
+
+init();
