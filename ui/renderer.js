@@ -77,7 +77,8 @@ const outgoingScreenCalls = new Map(); // peerId -> MediaConnection, us sharing 
 const screenTiles = new Map(); // peerId -> { call, tileEl }, someone else's screen we're viewing
 const remoteNames = new Map(); // peerId -> name they told us about themselves, live
 const pendingFriendRequests = new Map(); // peerId -> name, awaiting Accept/Decline
-const chatHistories = new Map(); // peerId -> [{ fromId, text }], per-friend DMs — independent of calls, in-memory only
+const chatHistories = loadChatHistories(); // peerId -> [{ fromId, text }], per-friend DMs — independent of calls, persisted to localStorage
+const pendingMessages = loadPendingMessages(); // peerId -> [{ type, scope, text }], DMs sent while they were offline — flushed once a connection to them opens
 let openChatPeerId = null; // whichever friend's DM thread is currently showing, or null (showing call chat / nothing)
 let callChatHistory = []; // shared broadcast thread for whoever's in the current call — resets when the call ends, like it always has
 let wasInCall = false; // so renderCallPanel() can detect the moment a call actually ends, to reset callChatHistory
@@ -239,6 +240,40 @@ function saveFriends(friends) {
   localStorage.setItem('patycord.friends', JSON.stringify(friends));
 }
 
+const CHAT_HISTORY_LIMIT = 300; // per peer — plenty for scrollback, bounded so localStorage can't grow forever
+
+function loadChatHistories() {
+  try {
+    const raw = JSON.parse(localStorage.getItem('patycord.chatHistories') || '{}');
+    return new Map(Object.entries(raw).filter(([id, msgs]) => id && Array.isArray(msgs)));
+  } catch {
+    return new Map();
+  }
+}
+
+function saveChatHistories() {
+  const obj = Object.fromEntries(
+    [...chatHistories].map(([id, msgs]) => [id, msgs.slice(-CHAT_HISTORY_LIMIT)])
+  );
+  localStorage.setItem('patycord.chatHistories', JSON.stringify(obj));
+}
+
+const PENDING_MESSAGE_LIMIT = 50; // per peer — a permanently-offline/removed friend shouldn't grow this forever
+
+function loadPendingMessages() {
+  try {
+    const raw = JSON.parse(localStorage.getItem('patycord.pendingMessages') || '{}');
+    return new Map(Object.entries(raw).filter(([id, msgs]) => id && Array.isArray(msgs)));
+  } catch {
+    return new Map();
+  }
+}
+
+function savePendingMessages() {
+  const obj = Object.fromEntries(pendingMessages);
+  localStorage.setItem('patycord.pendingMessages', JSON.stringify(obj));
+}
+
 // Entries saved before the pending/accepted split have no `status` field —
 // treat that as 'accepted' so existing friends don't vanish.
 function acceptedFriends() {
@@ -333,6 +368,9 @@ function removeFriend(id) {
   presence.delete(id); // only ever meaningful for someone on the friends list
   activityByPeer.delete(id);
   chatHistories.delete(id);
+  saveChatHistories();
+  pendingMessages.delete(id);
+  savePendingMessages();
   if (openChatPeerId === id) closeChat();
   if (!calls.has(id)) { dataConnections.get(id)?.close(); dataConnections.delete(id); } // keep it if still mid-call
   renderPeerList();
@@ -773,7 +811,10 @@ function wireCall(call, { outgoing = false } = {}) {
 function ensureDataConnection(id) {
   if (dataConnections.has(id)) return dataConnections.get(id);
   const conn = peer.connect(id);
-  conn.on('open', () => conn.send({ type: 'hello', name: getMyUsername(), activity: myActivity }));
+  conn.on('open', () => {
+    conn.send({ type: 'hello', name: getMyUsername(), activity: myActivity });
+    flushPendingMessages(id);
+  });
   conn.on('data', (msg) => handleDataMessage(id, msg));
   conn.on('error', () => {}); // connectivity errors surface via the call itself
   conn.on('close', () => dataConnections.delete(id));
@@ -832,6 +873,7 @@ function handleIncomingDataConnection(conn) {
       if (otherId !== conn.peer) otherConn.send({ type: 'peer-joined', id: conn.peer });
     }
     dataConnections.set(conn.peer, conn);
+    flushPendingMessages(conn.peer);
   });
   conn.on('data', (msg) => handleDataMessage(conn.peer, msg));
   conn.on('close', () => dataConnections.delete(conn.peer));
@@ -905,7 +947,28 @@ function addChatMessage(peerId, fromId, text) {
   const history = chatHistories.get(peerId) || [];
   history.push({ fromId, text });
   chatHistories.set(peerId, history);
+  saveChatHistories();
   if (peerId === openChatPeerId) renderChatMessage(fromId, text);
+}
+
+// Queues a DM for `peerId` so it survives them being offline (or us restarting
+// before they come back) — delivered whenever a connection to them next opens,
+// see flushPendingMessages, called from both places a data connection can open
+// (ensureDataConnection and handleIncomingDataConnection).
+function queueMessage(peerId, message) {
+  const queue = pendingMessages.get(peerId) || [];
+  queue.push(message);
+  pendingMessages.set(peerId, queue.slice(-PENDING_MESSAGE_LIMIT));
+  savePendingMessages();
+}
+
+function flushPendingMessages(peerId) {
+  const conn = dataConnections.get(peerId);
+  const queue = pendingMessages.get(peerId);
+  if (!conn?.open || !queue?.length) return;
+  for (const message of queue) conn.send(message);
+  pendingMessages.delete(peerId);
+  savePendingMessages();
 }
 
 function addCallChatMessage(fromId, text) {
@@ -960,10 +1023,9 @@ function sendChatMessage() {
   if (!text) return;
   if (openChatPeerId !== null) {
     const peerId = openChatPeerId;
-    const conn = ensureDataConnection(peerId);
-    const send = () => conn.send({ type: 'chat', scope: 'dm', text });
-    if (conn.open) send();
-    else conn.on('open', send);
+    ensureDataConnection(peerId);
+    queueMessage(peerId, { type: 'chat', scope: 'dm', text });
+    flushPendingMessages(peerId); // delivers now if already connected; otherwise waits for 'open'
     addChatMessage(peerId, peer.id, text);
   } else if (calls.size > 0) {
     for (const id of calls.keys()) dataConnections.get(id)?.send({ type: 'chat', scope: 'call', text });
