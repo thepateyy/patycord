@@ -1627,11 +1627,22 @@ settingsBtn.addEventListener('click', () => {
   settingsNameInput.value = getMyUsername();
   noiseSuppressionToggle.checked = getNoiseSuppressionEnabled();
   shareActivityToggle.checked = getShareActivityEnabled();
+  for (const b of settingsTabBtns) b.classList.toggle('active', b.dataset.tab === 'account');
+  for (const pane of settingsPanes) pane.hidden = pane.dataset.pane !== 'account';
   settingsModal.hidden = false;
   appVersionEl.textContent = '';
   window.__TAURI__?.app.getVersion().then((v) => { appVersionEl.textContent = `patycord v${v}`; });
 });
 closeSettingsBtn.addEventListener('click', () => { settingsModal.hidden = true; });
+
+const settingsTabBtns = document.querySelectorAll('.settingsTabBtn');
+const settingsPanes = document.querySelectorAll('.settingsPane');
+for (const btn of settingsTabBtns) {
+  btn.addEventListener('click', () => {
+    for (const b of settingsTabBtns) b.classList.toggle('active', b === btn);
+    for (const pane of settingsPanes) pane.hidden = pane.dataset.pane !== btn.dataset.tab;
+  });
+}
 noiseSuppressionToggle.addEventListener('change', () => {
   setNoiseSuppressionEnabled(noiseSuppressionToggle.checked);
 });

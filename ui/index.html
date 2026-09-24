@@ -236,7 +236,22 @@
   #usernameModal .avatar { width: 48px; height: 48px; font-size: 18px; margin: 0 auto 10px; }
   #usernameModal p { margin: 0 0 12px; font-size: 13.5px; color: var(--text); }
 
-  #settingsModal .card { width: min(320px, 90%); margin: 0; }
+  #settingsModal .card { width: min(520px, 92%); margin: 0; padding: 14px 0 0; overflow: hidden; }
+  #settingsModal .modalHeader { padding: 0 16px 12px; border-bottom: 1px solid var(--border); }
+  .settingsBody { display: flex; align-items: stretch; min-height: 300px; }
+  .settingsNav {
+    width: 128px; flex-shrink: 0; padding: 10px 8px; display: flex; flex-direction: column; gap: 2px;
+    border-right: 1px solid var(--border);
+  }
+  .settingsTabBtn {
+    background: transparent; color: var(--text-muted); text-align: left; font-size: 12.5px; font-weight: 600;
+    padding: 8px 10px; border-radius: var(--radius-sm); width: 100%;
+  }
+  .settingsTabBtn:hover { background: var(--bg-elev); color: var(--text); }
+  .settingsTabBtn.active { background: var(--bg-elev); color: #fff; }
+  .settingsPanes { flex: 1; min-width: 0; padding: 16px; }
+  .settingsPane[hidden] { display: none; }
+  .settingsNav .appVersion { margin-top: auto; padding: 0 2px; text-align: left; }
 
   #releaseNotesModal .card { width: min(420px, 90%); margin: 0; max-height: 70vh; display: flex; flex-direction: column; }
   .releaseNotesBody {
@@ -374,52 +389,68 @@
   </div>
 
   <div id="settingsModal" class="modalOverlay" hidden>
-    <div class="card">
+    <div class="card settingsCard">
       <div class="modalHeader">
         <label data-i18n="settings.title">Settings</label>
         <button id="closeSettingsBtn" class="ghost">×</button>
       </div>
 
-      <label data-i18n="settings.yourName">Your name</label>
-      <div class="row">
-        <input type="text" id="settingsNameInput" maxlength="40">
-        <button id="settingsSaveNameBtn" data-i18n="settings.save">Save</button>
+      <div class="settingsBody">
+        <div class="settingsNav">
+          <button class="settingsTabBtn active" data-tab="account" data-i18n="settings.tabAccount">Account</button>
+          <button class="settingsTabBtn" data-tab="audio" data-i18n="settings.audio">Audio</button>
+          <button class="settingsTabBtn" data-tab="privacy" data-i18n="settings.privacy">Privacy</button>
+          <button class="settingsTabBtn" data-tab="language" data-i18n="settings.language">Language</button>
+          <div id="appVersion" class="appVersion"></div>
+        </div>
+
+        <div class="settingsPanes">
+          <div class="settingsPane" data-pane="account">
+            <label data-i18n="settings.yourName">Your name</label>
+            <div class="row">
+              <input type="text" id="settingsNameInput" maxlength="40">
+              <button id="settingsSaveNameBtn" data-i18n="settings.save">Save</button>
+            </div>
+
+            <label style="margin-top:16px;" data-i18n="settings.yourId">Your ID (share this to let others join you)</label>
+            <div class="row">
+              <div id="myId" data-i18n="settings.connecting">connecting…</div>
+              <button id="copyBtn" class="secondary" data-i18n="settings.copy">Copy</button>
+            </div>
+          </div>
+
+          <div class="settingsPane" data-pane="audio" hidden>
+            <div class="switchRow">
+              <span class="switchLabel">
+                <span data-i18n="settings.noiseSuppression">Noise suppression</span>
+                <small data-i18n="settings.noiseSuppressionDesc">Filters background noise from your mic</small>
+              </span>
+              <label class="switch">
+                <input type="checkbox" id="noiseSuppressionToggle">
+                <span class="switchTrack"><span class="switchKnob"></span></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="settingsPane" data-pane="privacy" hidden>
+            <div class="switchRow">
+              <span class="switchLabel">
+                <span data-i18n="settings.shareActivity">Share what I'm playing</span>
+                <small data-i18n="settings.shareActivityDesc">Lets friends see the game you currently have open</small>
+              </span>
+              <label class="switch">
+                <input type="checkbox" id="shareActivityToggle">
+                <span class="switchTrack"><span class="switchKnob"></span></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="settingsPane" data-pane="language" hidden>
+            <label data-i18n="settings.language">Language</label>
+            <select id="languageSelect"></select>
+          </div>
+        </div>
       </div>
-
-      <label style="margin-top:12px;" data-i18n="settings.yourId">Your ID (share this to let others join you)</label>
-      <div class="row">
-        <div id="myId" data-i18n="settings.connecting">connecting…</div>
-        <button id="copyBtn" class="secondary" data-i18n="settings.copy">Copy</button>
-      </div>
-
-      <label style="margin-top:12px;" data-i18n="settings.audio">Audio</label>
-      <div class="switchRow">
-        <span class="switchLabel">
-          <span data-i18n="settings.noiseSuppression">Noise suppression</span>
-          <small data-i18n="settings.noiseSuppressionDesc">Filters background noise from your mic</small>
-        </span>
-        <label class="switch">
-          <input type="checkbox" id="noiseSuppressionToggle">
-          <span class="switchTrack"><span class="switchKnob"></span></span>
-        </label>
-      </div>
-
-      <label style="margin-top:12px;" data-i18n="settings.privacy">Privacy</label>
-      <div class="switchRow">
-        <span class="switchLabel">
-          <span data-i18n="settings.shareActivity">Share what I'm playing</span>
-          <small data-i18n="settings.shareActivityDesc">Lets friends see the game you currently have open</small>
-        </span>
-        <label class="switch">
-          <input type="checkbox" id="shareActivityToggle">
-          <span class="switchTrack"><span class="switchKnob"></span></span>
-        </label>
-      </div>
-
-      <label style="margin-top:12px;" data-i18n="settings.language">Language</label>
-      <select id="languageSelect"></select>
-
-      <div id="appVersion" class="appVersion"></div>
     </div>
   </div>
 

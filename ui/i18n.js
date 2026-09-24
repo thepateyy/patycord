@@ -11,6 +11,7 @@ const translations = {
     'username.continue': 'Continue',
 
     'settings.title': 'Settings',
+    'settings.tabAccount': 'Account',
     'settings.yourName': 'Your name',
     'settings.save': 'Save',
     'settings.yourId': 'Your ID (share this to let others join you)',
@@ -112,6 +113,7 @@ const translations = {
     'username.continue': 'Tovább',
 
     'settings.title': 'Beállítások',
+    'settings.tabAccount': 'Fiók',
     'settings.yourName': 'A neved',
     'settings.save': 'Mentés',
     'settings.yourId': 'Az azonosítód (oszd meg, hogy mások csatlakozhassanak)',
