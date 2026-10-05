@@ -975,6 +975,10 @@ function handleIncomingDataConnection(conn) {
 }
 
 function handleDataMessage(fromId, msg) {
+  // Everything below comes straight off the wire from another peer, and PeerJS
+  // will happily decode and deliver a bare null or string — reading .type off
+  // that throws right here, inside a data handler nothing above us catches.
+  if (!msg || typeof msg !== 'object') return;
   if (msg.type === 'hello') {
     learnName(fromId, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
     setPeerActivity(fromId, msg.activity);
@@ -1174,6 +1178,7 @@ function probePresence(id) {
     setTimeout(() => { try { probe.close(); } catch {} }, 800);
   });
   probe.on('data', (msg) => {
+    if (!msg || typeof msg !== 'object') return; // same as handleDataMessage — this is untrusted wire data too
     if (msg.type !== 'hello') return;
     learnName(id, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
     setPeerActivity(id, msg.activity);
