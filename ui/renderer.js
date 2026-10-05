@@ -893,6 +893,17 @@ function wireCall(call, { outgoing = false } = {}) {
   call.on('error', (err) => { toast(t('toast.callFailed', { name: friendName(call.peer), error: err })); removeCall(call.peer); });
 }
 
+// Drops `id`'s entry only if `conn` is still the connection we have on file for
+// them. A peer can end up with a second connection replacing the first in the map
+// (a presence probe racing a real connection, a reconnect, both sides dialing at
+// once) — and then the *older* one closing moments later would otherwise delete
+// the live entry, after which every dataConnections.get(id)?.send(...) silently
+// no-ops: call chat stops arriving and activity broadcasts stop going out, with
+// nothing logged to explain it.
+function removeDataConnection(id, conn) {
+  if (dataConnections.get(id) === conn) dataConnections.delete(id);
+}
+
 // Opens (if needed) the data connection used for roster exchange and chat with `id`.
 function ensureDataConnection(id) {
   if (dataConnections.has(id)) return dataConnections.get(id);
@@ -903,7 +914,7 @@ function ensureDataConnection(id) {
   });
   conn.on('data', (msg) => handleDataMessage(id, msg));
   conn.on('error', () => {}); // connectivity errors surface via the call itself
-  conn.on('close', () => dataConnections.delete(id));
+  conn.on('close', () => removeDataConnection(id, conn));
   dataConnections.set(id, conn);
   return conn;
 }
@@ -971,7 +982,7 @@ function handleIncomingDataConnection(conn) {
     flushPendingMessages(conn.peer);
   });
   conn.on('data', (msg) => handleDataMessage(conn.peer, msg));
-  conn.on('close', () => dataConnections.delete(conn.peer));
+  conn.on('close', () => removeDataConnection(conn.peer, conn));
 }
 
 function handleDataMessage(fromId, msg) {
