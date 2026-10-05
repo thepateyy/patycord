@@ -1009,7 +1009,14 @@ function handleDataMessage(fromId, msg) {
   } else if (msg.type === 'friend-request') {
     handleFriendRequest(fromId, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
   } else if (msg.type === 'friend-accept') {
-    addFriend(fromId, 'accepted'); // promotes our pending entry for them, if any
+    // Only ever promotes an outgoing request we actually sent — same guard
+    // handleFriendDecline already has, and for the same reason. Without it,
+    // anyone who knows our ID could send an unsolicited 'friend-accept' and land
+    // on the friends list as accepted with no prompt ever shown; accepted-friend
+    // status is what gates roster and activity disclosure, incoming DMs, and
+    // roster-driven auto-dial, so that's the whole trust boundary.
+    if (!pendingOutgoingFriends().some((f) => f.id === fromId)) return;
+    addFriend(fromId, 'accepted'); // promotes our pending entry for them
     toast(t('toast.friendAccepted', { name: friendName(fromId) }), 'info');
   } else if (msg.type === 'friend-decline') {
     handleFriendDecline(fromId);
