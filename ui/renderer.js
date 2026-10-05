@@ -166,6 +166,7 @@ const ICONS = {
 // ...) aren't worth the complexity and stay in plain localStorage.
 const SECURE_STORE_KEYS = ['myId', 'myUsername', 'friends', 'chatHistories', 'pendingMessages'];
 const secureStore = {}; // populated by initSecureStore() before anything else runs
+let secureStoreReadOnly = false; // set when the store exists but couldn't be decrypted — see initSecureStore
 
 function readLegacyPlaintextStore() {
   const result = {};
@@ -195,8 +196,17 @@ async function initSecureStore() {
   }
   try {
     Object.assign(secureStore, JSON.parse(await invoke('load_secure_store')));
-  } catch {
-    // Corrupt or unreadable — start fresh rather than block the app from opening.
+  } catch (err) {
+    // There IS a store, we just couldn't read it — the backend returns "{}" for a
+    // genuine first run, so this branch is never that. Carrying on with an empty
+    // store would be destructive rather than merely inconvenient: the very next
+    // save overwrites the file with {}, and getMyPersistentId() mints a fresh ID,
+    // so every friend's saved entry for us goes dead with no way back. Run
+    // read-only instead and say so, leaving the file intact for another attempt.
+    secureStoreReadOnly = true;
+    toast(t('toast.storeUnreadable'));
+    log(`secure store load failed: ${err.message || err}`);
+    return; // and no legacy migration either — that would write too
   }
   // One-time migration: anything still sitting in plaintext localStorage from
   // before this existed, that the encrypted store doesn't already have, moves over
@@ -214,10 +224,39 @@ async function initSecureStore() {
   }
 }
 
+// One invoke in flight at a time, with a single coalesced trailing save behind it.
+// saveSecureStore() runs on every chat message, friend change and queued DM, and
+// each call hands the backend the whole blob to rewrite — overlapping invokes land
+// on Tauri's thread pool and can complete out of order, which would let an older
+// snapshot be the one that sticks.
+let saveInFlight = null;
+let savePending = false;
+let secureStoreSaveWarned = false;
+
+function runSecureSave(invoke) {
+  const snapshot = JSON.stringify(secureStore); // taken now, so a queued save always persists the latest state rather than a stale one
+  saveInFlight = invoke('save_secure_store', { data: snapshot })
+    .catch((err) => {
+      // A save that never lands is silent data loss, so it's worth surfacing —
+      // but once, not on every message.
+      if (!secureStoreSaveWarned) {
+        secureStoreSaveWarned = true;
+        toast(t('toast.storeSaveFailed'));
+      }
+      log(`secure store save failed: ${err.message || err}`);
+    })
+    .finally(() => {
+      saveInFlight = null;
+      if (savePending) { savePending = false; runSecureSave(invoke); }
+    });
+}
+
 function saveSecureStore() {
   const invoke = window.__TAURI__?.core?.invoke;
   if (invoke) {
-    invoke('save_secure_store', { data: JSON.stringify(secureStore) }).catch(() => {});
+    if (secureStoreReadOnly) return; // never overwrite a store we failed to read
+    if (saveInFlight) { savePending = true; return; }
+    runSecureSave(invoke);
     return;
   }
   // Browser-testing fallback — mirror into plain localStorage.

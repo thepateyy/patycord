@@ -86,6 +86,8 @@ const translations = {
     'toast.notOnline': "{name} isn't online right now.",
     'toast.connectionError': 'Connection error: {error}',
     'toast.reconnecting': 'Lost connection to the signaling server, reconnecting…',
+    'toast.storeUnreadable': "Couldn't read your saved data, so nothing will be saved this session — your friends and messages are untouched on disk. Try restarting patycord.",
+    'toast.storeSaveFailed': "Couldn't save your data to disk — friends and messages from this session may not be kept.",
     'toast.newMessage': 'New message from {name}',
     'toast.newCallMessage': 'New call chat message from {name}',
 
@@ -188,6 +190,8 @@ const translations = {
     'toast.notOnline': '{name} jelenleg nincs online.',
     'toast.connectionError': 'Kapcsolódási hiba: {error}',
     'toast.reconnecting': 'Megszakadt a kapcsolat a jelzésszerverrel, újracsatlakozás…',
+    'toast.storeUnreadable': 'Nem sikerült beolvasni a mentett adataidat, ezért ebben a munkamenetben semmi nem lesz elmentve — a barátaid és az üzeneteid érintetlenek a lemezen. Próbáld újraindítani a patycordot.',
+    'toast.storeSaveFailed': 'Nem sikerült a lemezre menteni az adataidat — a munkamenet barátai és üzenetei elveszhetnek.',
     'toast.newMessage': 'Új üzenet tőle: {name}',
     'toast.newCallMessage': 'Új üzenet a hívás csevegésben tőle: {name}',
 
