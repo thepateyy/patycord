@@ -60,12 +60,18 @@
   .friendsCard ul { flex: 1; overflow-y: auto; }
   label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); display: block; margin-bottom: 6px; font-weight: 600; }
   .row { display: flex; gap: 8px; align-items: center; }
+  .row input { flex: 1; min-width: 0; }
+  /* What's on screen is the pretty Name#1234 tag, not the real ID — so it's
+     click-to-copy rather than text-selectable, which would copy the wrong thing. */
   #myId {
     font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 12.5px;
-    background: var(--bg); border: 1px solid var(--border);
-    padding: 7px 10px; border-radius: var(--radius-sm); flex: 1;
-    user-select: all; overflow-wrap: anywhere;
+    background: var(--bg-elev); border: 1px solid var(--border);
+    padding: 7px 10px; border-radius: var(--radius-sm); flex: 1; min-width: 0;
+    user-select: none; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  #myId:hover { border-color: var(--accent); }
+  .hint { font-size: 11.5px; color: var(--text-muted); margin: 0 0 6px; line-height: 1.4; }
+  .addFriendStep + .addFriendStep { margin-top: 12px; }
 
   .profileRow {
     display: flex; align-items: center; gap: 10px; padding: 8px 10px;
@@ -143,7 +149,15 @@
   .dot.online { background: var(--success); box-shadow: 0 0 0 2.5px var(--bg-elev), 0 0 6px 1px rgba(47,182,115,0.6); }
 
   .removeBtn { padding: 4px 8px; font-size: 15px; line-height: 1; flex-shrink: 0; }
-  .pendingLabel { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+  /* Removing a friend also wipes your chat history with them — keep it out of the
+     way until you're actually pointing at that row, and make it a two-step click. */
+  li.friendRow .removeBtn { opacity: 0; transition: opacity 0.12s ease, background 0.12s ease; }
+  li.friendRow:hover .removeBtn, li.friendRow .removeBtn:focus-visible, li.friendRow .removeBtn.confirm { opacity: 1; }
+  .removeBtn.confirm { background: var(--danger); color: #fff; font-size: 11px; padding: 5px 8px; }
+  .removeBtn.confirm:hover { background: #c73f48; color: #fff; }
+  .status { font-size: 10.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+  .status.online { color: var(--success); }
+  #pendingList .removeBtn { opacity: 1; } /* cancelling a request loses nothing — no need to hide it */
   .callToggleBtn {
     width: 28px; height: 28px; border-radius: 50%; padding: 0; flex-shrink: 0;
     display: flex; align-items: center; justify-content: center;
@@ -181,7 +195,7 @@
   .declineBtn { background: var(--danger); }
   .declineBtn:hover { background: #c73f48; }
 
-  #toasts { position: fixed; top: 12px; right: 12px; left: 12px; display: flex; flex-direction: column; gap: 6px; z-index: 100; }
+  #toasts { position: fixed; top: 12px; right: 12px; width: min(360px, calc(100% - 24px)); display: flex; flex-direction: column; gap: 6px; z-index: 100; }
   .toast {
     background: var(--bg-elev); border: 1px solid var(--border); border-left: 3px solid var(--danger); color: #fff;
     border-radius: var(--radius-sm); padding: 10px 12px; font-size: 13px;
@@ -232,9 +246,10 @@
     display: flex; align-items: center; justify-content: center; z-index: 200;
     animation: toast-in 0.15s ease-out;
   }
-  #usernameModal .card { width: min(300px, 90%); margin: 0; text-align: center; }
+  #usernameModal .card { width: min(320px, 90%); margin: 0; text-align: center; padding: 18px; }
   #usernameModal .avatar { width: 48px; height: 48px; font-size: 18px; margin: 0 auto 10px; }
-  #usernameModal p { margin: 0 0 12px; font-size: 13.5px; color: var(--text); }
+  #usernameModal h2 { margin: 0 0 4px; font-size: 16px; color: #fff; }
+  #usernameModal p { margin: 0 0 12px; font-size: 13px; color: var(--text-muted); }
 
   #settingsModal .card { width: min(520px, 92%); margin: 0; padding: 14px 0 0; overflow: hidden; }
   #settingsModal .modalHeader { padding: 0 16px 12px; border-bottom: 1px solid var(--border); }
@@ -285,9 +300,16 @@
 
   /* control dock */
   #dock {
-    flex-shrink: 0; border-top: 1px solid var(--border);
+    position: relative; flex-shrink: 0; border-top: 1px solid var(--border); min-height: 67px;
     padding: 12px; display: flex; align-items: center; justify-content: center; gap: 10px;
   }
+  /* The log is a diagnostics thing, not a call control — tucked into the corner
+     so the middle of the dock is only ever mute / share / leave. */
+  #dock #logToggleBtn { position: absolute; right: 12px; width: 34px; height: 34px; background: transparent; color: var(--text-muted); }
+  #dock #logToggleBtn:hover, #dock #logToggleBtn.open { background: var(--bg-elev-2); color: var(--text); }
+  #dock #logToggleBtn svg { width: 16px; height: 16px; }
+  .dockBtn.leave { background: var(--danger); width: 56px; border-radius: 21px; }
+  .dockBtn.leave:hover { background: #c73f48; }
   .dockBtn {
     width: 42px; height: 42px; border-radius: 50%; background: var(--bg-elev-2);
     display: flex; align-items: center; justify-content: center; padding: 0; flex-shrink: 0;
@@ -308,10 +330,20 @@
   }
   #status { font-size: 11.5px; color: var(--text-muted); white-space: pre-wrap; font-family: ui-monospace, monospace; }
 
+  .sectionTitle { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); font-weight: 600; margin: 4px 0 12px; }
+  .sectionTitle[hidden] { display: none; }
   .callParticipants { display: flex; flex-wrap: wrap; gap: 16px; padding-bottom: 6px; }
   .participant { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 88px; }
+  .participant .avatarWrap { position: relative; }
   .participant .avatar { width: 54px; height: 54px; font-size: 17px; }
   .participant.dialing .avatar { opacity: 0.45; }
+  .participant .mutedBadge {
+    position: absolute; right: -2px; bottom: -2px; width: 22px; height: 22px; border-radius: 50%;
+    background: var(--danger); color: #fff; display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 0 0 3px var(--bg);
+  }
+  .participant .mutedBadge svg { width: 12px; height: 12px; }
+  .participant .pname.sub { color: var(--text-muted); }
   .participant .pname { font-size: 11.5px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
   .volumeBtn {
     width: 26px; height: 26px; border-radius: 50%; padding: 0;
@@ -354,8 +386,21 @@
   .screenSharePopoverRow { display: flex; gap: 6px; }
   .screenSharePopoverRow select { flex: 1; min-width: 0; }
 
-  .emptyState { color: var(--text-muted); font-size: 13px; text-align: center; padding: 60px 20px; }
-  .emptyState svg { width: 40px; height: 40px; margin-bottom: 10px; opacity: 0.5; }
+  .emptyState { color: var(--text-muted); font-size: 13px; text-align: center; padding: 60px 20px; line-height: 1.5; }
+  .emptyState[hidden] { display: none; }
+  .emptyState > svg { width: 40px; height: 40px; margin-bottom: 10px; opacity: 0.5; }
+  .emptyState h2 { font-size: 17px; color: #fff; margin: 0 0 6px; }
+  .emptyState p { margin: 0 auto; max-width: 380px; }
+  .steps { list-style: none; margin: 20px auto 0; padding: 0; max-width: 400px; text-align: left; display: flex; flex-direction: column; gap: 10px; }
+  .steps li { display: flex; gap: 12px; align-items: flex-start; background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; color: var(--text); }
+  .steps .stepNum {
+    width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: #fff; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700;
+  }
+  .steps small { display: block; color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+  .emptyState .inlineIcon { display: inline-flex; vertical-align: -3px; width: 16px; height: 16px; border-radius: 50%; background: var(--success); color: #fff; align-items: center; justify-content: center; }
+  .emptyState .inlineIcon svg { width: 9px; height: 9px; }
+  .emptyState .inlineDot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--success); vertical-align: 0; }
 
   .chatPanel[hidden] { display: none; }
   .chatPanel {
@@ -368,6 +413,7 @@
   }
   .chatHeaderName { font-size: 13px; font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chatMessages { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+  .chatMessages:empty::before { content: attr(data-empty); color: var(--text-muted); font-size: 12px; text-align: center; margin: auto 0; line-height: 1.5; }
   .chatMsg { font-size: 12.5px; line-height: 1.4; }
   .chatMsg .who { font-weight: 700; }
   .chatMsg .time { color: var(--text-muted); font-size: 10px; margin-left: 6px; }
@@ -380,6 +426,7 @@
   <div id="usernameModal" class="modalOverlay" hidden>
     <div class="card">
       <div class="avatar" id="usernameAvatar" style="background:#3f7ff5;">?</div>
+      <h2 data-i18n="username.welcome">Welcome to patycord</h2>
       <p data-i18n="username.prompt">What should people see when you call them?</p>
       <div class="connect-row">
         <input type="text" id="usernameInput" data-i18n-placeholder="username.placeholder" placeholder="your name" maxlength="40">
@@ -411,12 +458,7 @@
               <input type="text" id="settingsNameInput" maxlength="40">
               <button id="settingsSaveNameBtn" data-i18n="settings.save">Save</button>
             </div>
-
-            <label style="margin-top:16px;" data-i18n="settings.yourId">Your ID (share this to let others join you)</label>
-            <div class="row">
-              <div id="myId" data-i18n="settings.connecting">connecting…</div>
-              <button id="copyBtn" class="secondary" data-i18n="settings.copy">Copy</button>
-            </div>
+            <p class="hint" style="margin-top:8px;" data-i18n="settings.yourNameDesc">Friends see this name in their list and when you call them.</p>
           </div>
 
           <div class="settingsPane" data-pane="audio" hidden>
@@ -501,9 +543,19 @@
 
       <div class="card">
         <label data-i18n="sidebar.addFriend">Add a friend</label>
-        <div class="connect-row">
-          <input type="text" id="peerIdInput" data-i18n-placeholder="sidebar.theirId" placeholder="their ID">
-          <button id="callBtn" data-i18n="sidebar.add">Add</button>
+        <div class="addFriendStep">
+          <p class="hint" data-i18n="sidebar.shareYourId">Send them your ID…</p>
+          <div class="row">
+            <div id="myId" data-i18n="settings.connecting" data-i18n-title="sidebar.copyIdTitle" title="Click to copy your ID">connecting…</div>
+            <button id="copyBtn" class="secondary" data-i18n="settings.copy">Copy</button>
+          </div>
+        </div>
+        <div class="addFriendStep">
+          <p class="hint" data-i18n="sidebar.orPasteTheirs">…or paste theirs here:</p>
+          <div class="row">
+            <input type="text" id="peerIdInput" data-i18n-placeholder="sidebar.theirId" placeholder="their ID">
+            <button id="callBtn" data-i18n="sidebar.add">Add</button>
+          </div>
         </div>
       </div>
 
@@ -513,7 +565,7 @@
       </div>
 
       <div class="card friendsCard">
-        <label id="friendsCountLabel">Friends (0 in call)</label>
+        <label id="friendsCountLabel">Friends</label>
         <ul id="peerList"></ul>
       </div>
     </aside>
@@ -522,12 +574,12 @@
       <div class="mainScroll">
         <div id="incomingCalls"></div>
         <div id="friendRequests"></div>
+        <div class="sectionTitle" id="callTitle" hidden></div>
         <div class="callParticipants" id="callParticipants"></div>
         <div id="screenGrid"></div>
-        <div class="emptyState" id="callEmptyState">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
-          <div data-i18n="main.notInCall">Not in a call — pick a friend on the left and hit Call.</div>
-        </div>
+        <!-- Filled in by renderCallPanel — what it says depends on whether you
+             have any friends yet, or whether the mic failed. -->
+        <div class="emptyState" id="callEmptyState"></div>
       </div>
 
       <div id="logPanel" hidden>
@@ -537,6 +589,7 @@
       <div id="dock">
         <button id="muteBtn" class="dockBtn" title="Mute" data-i18n-title="main.mute" hidden></button>
         <button id="shareScreenBtn" class="dockBtn" title="Share screen" data-i18n-title="main.shareScreen" hidden></button>
+        <button id="leaveCallBtn" class="dockBtn leave" title="Leave call" data-i18n-title="main.leaveCall" hidden></button>
         <button id="logToggleBtn" class="dockBtn" title="Activity log" data-i18n-title="main.activityLog"></button>
       </div>
     </main>
