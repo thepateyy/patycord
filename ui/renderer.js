@@ -25,6 +25,7 @@ const pendingCardEl = document.getElementById('pendingCard');
 const pendingListEl = document.getElementById('pendingList');
 const muteBtn = document.getElementById('muteBtn');
 const shareScreenBtn = document.getElementById('shareScreenBtn');
+const leaveCallBtn = document.getElementById('leaveCallBtn');
 const logToggleBtn = document.getElementById('logToggleBtn');
 const logPanel = document.getElementById('logPanel');
 const statusEl = document.getElementById('status');
@@ -32,6 +33,7 @@ const incomingCallsEl = document.getElementById('incomingCalls');
 const friendRequestsEl = document.getElementById('friendRequests');
 const toastsEl = document.getElementById('toasts');
 const screenGridEl = document.getElementById('screenGrid');
+const callTitleEl = document.getElementById('callTitle');
 const callParticipantsEl = document.getElementById('callParticipants');
 const callEmptyStateEl = document.getElementById('callEmptyState');
 const usernameAvatar = document.getElementById('usernameAvatar');
@@ -166,6 +168,7 @@ const ICONS = {
 // ...) aren't worth the complexity and stay in plain localStorage.
 const SECURE_STORE_KEYS = ['myId', 'myUsername', 'friends', 'chatHistories', 'pendingMessages'];
 const secureStore = {}; // populated by initSecureStore() before anything else runs
+let secureStoreReadOnly = false; // set when the store exists but couldn't be decrypted — see initSecureStore
 
 function readLegacyPlaintextStore() {
   const result = {};
@@ -195,8 +198,17 @@ async function initSecureStore() {
   }
   try {
     Object.assign(secureStore, JSON.parse(await invoke('load_secure_store')));
-  } catch {
-    // Corrupt or unreadable — start fresh rather than block the app from opening.
+  } catch (err) {
+    // There IS a store, we just couldn't read it — the backend returns "{}" for a
+    // genuine first run, so this branch is never that. Carrying on with an empty
+    // store would be destructive rather than merely inconvenient: the very next
+    // save overwrites the file with {}, and getMyPersistentId() mints a fresh ID,
+    // so every friend's saved entry for us goes dead with no way back. Run
+    // read-only instead and say so, leaving the file intact for another attempt.
+    secureStoreReadOnly = true;
+    toast(t('toast.storeUnreadable'));
+    log(`secure store load failed: ${err.message || err}`);
+    return; // and no legacy migration either — that would write too
   }
   // One-time migration: anything still sitting in plaintext localStorage from
   // before this existed, that the encrypted store doesn't already have, moves over
@@ -214,10 +226,39 @@ async function initSecureStore() {
   }
 }
 
+// One invoke in flight at a time, with a single coalesced trailing save behind it.
+// saveSecureStore() runs on every chat message, friend change and queued DM, and
+// each call hands the backend the whole blob to rewrite — overlapping invokes land
+// on Tauri's thread pool and can complete out of order, which would let an older
+// snapshot be the one that sticks.
+let saveInFlight = null;
+let savePending = false;
+let secureStoreSaveWarned = false;
+
+function runSecureSave(invoke) {
+  const snapshot = JSON.stringify(secureStore); // taken now, so a queued save always persists the latest state rather than a stale one
+  saveInFlight = invoke('save_secure_store', { data: snapshot })
+    .catch((err) => {
+      // A save that never lands is silent data loss, so it's worth surfacing —
+      // but once, not on every message.
+      if (!secureStoreSaveWarned) {
+        secureStoreSaveWarned = true;
+        toast(t('toast.storeSaveFailed'));
+      }
+      log(`secure store save failed: ${err.message || err}`);
+    })
+    .finally(() => {
+      saveInFlight = null;
+      if (savePending) { savePending = false; runSecureSave(invoke); }
+    });
+}
+
 function saveSecureStore() {
   const invoke = window.__TAURI__?.core?.invoke;
   if (invoke) {
-    invoke('save_secure_store', { data: JSON.stringify(secureStore) }).catch(() => {});
+    if (secureStoreReadOnly) return; // never overwrite a store we failed to read
+    if (saveInFlight) { savePending = true; return; }
+    runSecureSave(invoke);
     return;
   }
   // Browser-testing fallback — mirror into plain localStorage.
@@ -376,12 +417,14 @@ function addFriend(id, status = 'accepted') {
       existing.status = 'accepted';
       saveFriends(friends);
       renderPeerList();
+      probePresence(id); // show them online now, not on the next sweep up to 10s later
     }
     return;
   }
   friends.push({ id, name: remoteNames.get(id) || null, status });
   saveFriends(friends);
   renderPeerList();
+  if (status === 'accepted') probePresence(id);
 }
 
 // Someone told us their name (via the data-connection handshake) — update our live
@@ -574,15 +617,14 @@ function renderPendingList() {
     const li = document.createElement('li');
     li.className = 'friendRow';
     li.innerHTML = `
-      <span class="who">
+      <span class="who" title="${escapeHtml(tagFor(friend.id, name))}">
         <span class="avatarWrap">${avatarHtml(friend.id, name)}</span>
         <span class="who-text">
           <span class="name">${escapeHtml(name)}</span>
-          ${tagHtml(friend.id, name)}
+          <span class="status">${t('sidebar.waiting')}</span>
         </span>
       </span>
       <span class="actions">
-        <span class="pendingLabel">${t('sidebar.waiting')}</span>
         <button class="removeBtn ghost" title="${t('sidebar.cancelRequest')}">×</button>
       </span>`;
     li.querySelector('.removeBtn').addEventListener('click', () => removeFriend(friend.id));
@@ -603,6 +645,30 @@ function scheduleRenderPeerList() {
   }, 50);
 }
 
+// Removing a friend also wipes your chat history with them, so the × asks
+// "Remove?" first and only a second click within a few seconds goes through.
+// Tracked here rather than on the button because the list re-renders on every
+// presence sweep, which would otherwise reset it mid-confirm.
+let confirmRemoveId = null;
+let confirmRemoveTimer = null;
+function requestRemoveFriend(id) {
+  clearTimeout(confirmRemoveTimer);
+  if (confirmRemoveId === id) {
+    confirmRemoveId = null;
+    removeFriend(id);
+    return;
+  }
+  confirmRemoveId = id;
+  confirmRemoveTimer = setTimeout(() => { confirmRemoveId = null; renderPeerList(); }, 3000);
+  renderPeerList();
+}
+
+function friendStatusHtml({ inCall, connected, isOnline, activity }) {
+  if (inCall) return `<span class="status online">${connected ? t('status.inCall') : t('status.calling')}</span>`;
+  if (activity) return `<span class="activity">${escapeHtml(t('friend.playing', { name: prettyActivityName(activity) }))}</span>`;
+  return `<span class="status${isOnline ? ' online' : ''}">${isOnline ? t('status.online') : t('status.offline')}</span>`;
+}
+
 function renderPeerList() {
   renderPendingList();
   const friends = acceptedFriends();
@@ -615,29 +681,38 @@ function renderPeerList() {
     peerListEl.appendChild(li);
   }
 
-  for (const friend of friends) {
+  const rows = friends.map((friend) => {
     const inCall = calls.has(friend.id);
     const connected = !!calls.get(friend.id)?.audioEl; // stream actually flowing, not just dialing
-    const isOnline = connected || presence.get(friend.id);
+    const isOnline = connected || !!presence.get(friend.id);
+    return { friend, name: nameFor(friend), inCall, connected, isOnline };
+  });
+  // Whoever you can actually talk to right now goes to the top: in the call,
+  // then online, then offline — alphabetical within each.
+  const rank = (r) => (r.inCall ? 0 : r.isOnline ? 1 : 2);
+  rows.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+
+  for (const { friend, name, inCall, connected, isOnline } of rows) {
     const activity = isOnline ? activityByPeer.get(friend.id) : null;
-    const name = nameFor(friend);
+    const confirming = confirmRemoveId === friend.id;
     const li = document.createElement('li');
     li.className = 'friendRow';
     li.innerHTML = `
-      <span class="who">
+      <span class="who" title="${escapeHtml(tagFor(friend.id, name))}">
         <span class="avatarWrap">
           ${avatarHtml(friend.id, name)}
           <span class="dot ${isOnline ? 'online' : ''}"></span>
         </span>
         <span class="who-text">
           <span class="name">${escapeHtml(name)}</span>
-          ${activity ? `<span class="activity">${escapeHtml(t('friend.playing', { name: prettyActivityName(activity) }))}</span>` : tagHtml(friend.id, name)}
+          ${friendStatusHtml({ inCall, connected, isOnline, activity })}
         </span>
       </span>
       <span class="actions">
+        ${confirming ? '' : `
         ${inCall || isOnline ? `<button class="callToggleBtn ${inCall ? 'hangupBtn' : 'callBtnIcon'}" title="${inCall ? (connected ? t('sidebar.hangUp') : t('sidebar.cancel')) : t('sidebar.call')}"></button>` : ''}
-        ${isOnline ? `<button class="chatToggleBtn${friend.id === openChatPeerId ? ' active' : ''}" title="${t('sidebar.chat')}"></button>` : ''}
-        <button class="removeBtn ghost" title="${t('sidebar.remove')}">×</button>
+        ${isOnline ? `<button class="chatToggleBtn${friend.id === openChatPeerId ? ' active' : ''}" title="${t('sidebar.chat')}"></button>` : ''}`}
+        <button class="removeBtn ghost${confirming ? ' confirm' : ''}" title="${t('sidebar.remove')}">${confirming ? t('sidebar.removeConfirm') : '×'}</button>
       </span>`;
     const callToggleBtn = li.querySelector('.callToggleBtn');
     if (callToggleBtn) {
@@ -655,7 +730,7 @@ function renderPeerList() {
         else openChatWith(friend.id);
       });
     }
-    li.querySelector('.removeBtn').addEventListener('click', () => removeFriend(friend.id));
+    li.querySelector('.removeBtn').addEventListener('click', () => requestRemoveFriend(friend.id));
     peerListEl.appendChild(li);
   }
 
@@ -668,11 +743,11 @@ function renderPeerList() {
     const li = document.createElement('li');
     li.className = 'friendRow';
     li.innerHTML = `
-      <span class="who">
+      <span class="who" title="${escapeHtml(tagFor(id, name))}">
         <span class="avatarWrap">${avatarHtml(id, name)}<span class="dot online"></span></span>
         <span class="who-text">
           <span class="name">${escapeHtml(name)}</span>
-          ${tagHtml(id, name)}
+          ${friendStatusHtml({ inCall: true, connected: !!calls.get(id).audioEl })}
         </span>
       </span>
       <span class="actions">
@@ -684,7 +759,9 @@ function renderPeerList() {
     peerListEl.appendChild(li);
   }
 
-  friendsCountLabelEl.textContent = t('sidebar.friends', { count: calls.size });
+  friendsCountLabelEl.textContent = friends.length
+    ? t('sidebar.friends', { online: rows.filter((r) => r.isOnline).length })
+    : t('sidebar.friendsTitle');
   renderCallPanel();
 }
 
@@ -692,8 +769,26 @@ function renderPeerList() {
 // sidebar's friends list, which is about who you *know*, not who's connected.
 function renderCallPanel() {
   closeVolumePopover(); // chip buttons are about to be torn down and rebuilt
-  callEmptyStateEl.hidden = calls.size > 0;
+  const inCall = calls.size > 0;
+  renderEmptyState(inCall);
+  callTitleEl.hidden = !inCall;
+  callTitleEl.textContent = t('main.inCall', { count: calls.size + 1 }); // +1 for us
   callParticipantsEl.innerHTML = '';
+
+  // Ourselves first, so it's obvious at a glance whether we're muted.
+  if (inCall) {
+    const me = document.createElement('div');
+    me.className = 'participant';
+    me.innerHTML = `
+      <span class="avatarWrap">
+        ${avatarHtml(getMyPersistentId(), getMyUsername())}
+        ${muted ? `<span class="mutedBadge" title="${t('main.muted')}">${ICONS.micOff}</span>` : ''}
+      </span>
+      <span class="pname">${escapeHtml(getMyUsername())}</span>
+      <span class="pname sub">${muted ? t('main.muted') : t('main.you')}</span>`;
+    callParticipantsEl.appendChild(me);
+  }
+
   for (const [id, entry] of calls) {
     const name = friendName(id);
     const div = document.createElement('div');
@@ -703,7 +798,7 @@ function renderCallPanel() {
       <span class="pname">${escapeHtml(name)}</span>
       ${entry.audioEl
         ? `<button class="volumeBtn ghost" title="${t('main.volume')}"></button>`
-        : `<span class="pname" style="color:var(--text-muted)">${t('main.connecting')}</span>`}`;
+        : `<span class="pname sub">${t('main.calling')}</span>`}`;
     if (entry.audioEl) {
       const volumeBtn = div.querySelector('.volumeBtn');
       updateVolumeIcon(volumeBtn, entry.audioEl.volume);
@@ -712,16 +807,54 @@ function renderCallPanel() {
     callParticipantsEl.appendChild(div);
   }
 
-  // Mute/share are call-specific — hide them the rest of the time, and drop
+  // Mute/share/leave are call-specific — hide them the rest of the time, and drop
   // any in-progress screen share once there's no one left to send it to.
-  const inCall = calls.size > 0;
   muteBtn.hidden = !inCall;
   shareScreenBtn.hidden = !inCall;
+  leaveCallBtn.hidden = !inCall;
   if (!inCall && screenStream) stopScreenShare();
 
   if (wasInCall && !inCall) callChatHistory = []; // call chat ends with the call, like it always has
   wasInCall = inCall;
   updateChatView();
+}
+
+// What the main panel says when there's no call — tailored to what you can
+// actually do next: fix the mic, get your first friend added, or call someone.
+// Only rebuilt when that changes (renderCallPanel runs on every presence sweep);
+// applyLanguage resets emptyStateVariant to force a re-render in the new language.
+let emptyStateVariant = null;
+function renderEmptyState(inCall) {
+  callEmptyStateEl.hidden = inCall;
+  if (inCall) return;
+  const variant = micAccessFailed ? 'noMic' : acceptedFriends().length === 0 ? 'welcome' : 'idle';
+  if (variant === emptyStateVariant) return;
+  emptyStateVariant = variant;
+
+  if (variant === 'noMic') {
+    callEmptyStateEl.innerHTML = `
+      ${ICONS.micOff}
+      <h2>${t('main.noMicTitle')}</h2>
+      <p>${t('main.noMic')}</p>`;
+  } else if (variant === 'welcome') {
+    const step = (n, title, desc, extra = '') => `
+      <li><span class="stepNum">${n}</span><span>${title}<small>${desc}</small>${extra}</span></li>`;
+    callEmptyStateEl.innerHTML = `
+      <h2>${t('main.welcomeTitle')}</h2>
+      <p>${t('main.welcomeIntro')}</p>
+      <ol class="steps">
+        ${step(1, t('main.step1'), t('main.step1Desc'), `<button class="secondary welcomeCopyBtn" style="margin-top:8px;">${t('main.copyMyId')}</button>`)}
+        ${step(2, t('main.step2'), t('main.step2Desc'))}
+        ${step(3, t('main.step3'), t('main.step3Desc'))}
+      </ol>`;
+    const welcomeCopyBtn = callEmptyStateEl.querySelector('.welcomeCopyBtn');
+    welcomeCopyBtn.addEventListener('click', () => copyMyId(welcomeCopyBtn, () => t('main.copyMyId')));
+  } else {
+    callEmptyStateEl.innerHTML = `
+      ${ICONS.phone}
+      <h2>${t('main.notInCallTitle')}</h2>
+      <p>${t('main.notInCall', { dot: '<span class="inlineDot"></span>', phone: `<span class="inlineIcon">${ICONS.phone}</span>` })}</p>`;
+  }
 }
 
 // --- per-participant volume popover -------------------------------
@@ -893,6 +1026,17 @@ function wireCall(call, { outgoing = false } = {}) {
   call.on('error', (err) => { toast(t('toast.callFailed', { name: friendName(call.peer), error: err })); removeCall(call.peer); });
 }
 
+// Drops `id`'s entry only if `conn` is still the connection we have on file for
+// them. A peer can end up with a second connection replacing the first in the map
+// (a presence probe racing a real connection, a reconnect, both sides dialing at
+// once) — and then the *older* one closing moments later would otherwise delete
+// the live entry, after which every dataConnections.get(id)?.send(...) silently
+// no-ops: call chat stops arriving and activity broadcasts stop going out, with
+// nothing logged to explain it.
+function removeDataConnection(id, conn) {
+  if (dataConnections.get(id) === conn) dataConnections.delete(id);
+}
+
 // Opens (if needed) the data connection used for roster exchange and chat with `id`.
 function ensureDataConnection(id) {
   if (dataConnections.has(id)) return dataConnections.get(id);
@@ -903,7 +1047,7 @@ function ensureDataConnection(id) {
   });
   conn.on('data', (msg) => handleDataMessage(id, msg));
   conn.on('error', () => {}); // connectivity errors surface via the call itself
-  conn.on('close', () => dataConnections.delete(id));
+  conn.on('close', () => removeDataConnection(id, conn));
   dataConnections.set(id, conn);
   return conn;
 }
@@ -971,10 +1115,14 @@ function handleIncomingDataConnection(conn) {
     flushPendingMessages(conn.peer);
   });
   conn.on('data', (msg) => handleDataMessage(conn.peer, msg));
-  conn.on('close', () => dataConnections.delete(conn.peer));
+  conn.on('close', () => removeDataConnection(conn.peer, conn));
 }
 
 function handleDataMessage(fromId, msg) {
+  // Everything below comes straight off the wire from another peer, and PeerJS
+  // will happily decode and deliver a bare null or string — reading .type off
+  // that throws right here, inside a data handler nothing above us catches.
+  if (!msg || typeof msg !== 'object') return;
   if (msg.type === 'hello') {
     learnName(fromId, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
     setPeerActivity(fromId, msg.activity);
@@ -1009,7 +1157,14 @@ function handleDataMessage(fromId, msg) {
   } else if (msg.type === 'friend-request') {
     handleFriendRequest(fromId, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
   } else if (msg.type === 'friend-accept') {
-    addFriend(fromId, 'accepted'); // promotes our pending entry for them, if any
+    // Only ever promotes an outgoing request we actually sent — same guard
+    // handleFriendDecline already has, and for the same reason. Without it,
+    // anyone who knows our ID could send an unsolicited 'friend-accept' and land
+    // on the friends list as accepted with no prompt ever shown; accepted-friend
+    // status is what gates roster and activity disclosure, incoming DMs, and
+    // roster-driven auto-dial, so that's the whole trust boundary.
+    if (!pendingOutgoingFriends().some((f) => f.id === fromId)) return;
+    addFriend(fromId, 'accepted'); // promotes our pending entry for them
     toast(t('toast.friendAccepted', { name: friendName(fromId) }), 'info');
   } else if (msg.type === 'friend-decline') {
     handleFriendDecline(fromId);
@@ -1083,6 +1238,7 @@ function openChatWith(peerId) {
   chatHeaderNameEl.textContent = friendName(peerId);
   chatCloseBtn.hidden = false;
   chatMessagesEl.innerHTML = '';
+  chatMessagesEl.dataset.empty = t('chat.emptyDm');
   for (const { fromId, text } of chatHistories.get(peerId) || []) renderChatMessage(fromId, text);
   chatPanelEl.hidden = false;
   chatInputEl.focus();
@@ -1095,6 +1251,7 @@ function showCallChat() {
   chatHeaderNameEl.textContent = t('chat.title');
   chatCloseBtn.hidden = true;
   chatMessagesEl.innerHTML = '';
+  chatMessagesEl.dataset.empty = t('chat.emptyCall');
   for (const { fromId, text } of callChatHistory) renderChatMessage(fromId, text);
   chatPanelEl.hidden = false;
 }
@@ -1167,6 +1324,7 @@ function probePresence(id) {
     setTimeout(() => { try { probe.close(); } catch {} }, 800);
   });
   probe.on('data', (msg) => {
+    if (!msg || typeof msg !== 'object') return; // same as handleDataMessage — this is untrusted wire data too
     if (msg.type !== 'hello') return;
     learnName(id, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
     setPeerActivity(id, msg.activity);
@@ -1176,6 +1334,21 @@ function probePresence(id) {
 
 function probeAllFriends() {
   for (const friend of acceptedFriends()) probePresence(friend.id);
+  for (const friend of pendingOutgoingFriends()) retryFriendRequest(friend.id);
+}
+
+// A friend request only arrives if they're online the moment it's sent, so a
+// pending one is re-sent on every presence sweep until a connection to them
+// actually opens — i.e. as soon as they next start patycord. Goes over the
+// regular, long-lived data connection rather than a throwaway presence probe,
+// so their Accept/Decline (which could come much later) still has a way back.
+// Once that connection is open there's nothing to redo: the request went out
+// when it opened, and handleFriendRequest on their end ignores repeats anyway.
+function retryFriendRequest(id) {
+  const existing = dataConnections.get(id);
+  if (existing?.open) return;
+  if (existing) { existing.close(); dataConnections.delete(id); } // a dead attempt from while they were offline
+  sendFriendRequest(id);
 }
 
 // Like friendName(id), but for call sites that already have the friend record in
@@ -1532,6 +1705,7 @@ async function requestMic() {
     micAccessFailed = true;
     myIdEl.textContent = t('myId.micNeeded');
     myIdEl.removeAttribute('data-i18n'); // same reasoning as the peer.on('open') case above
+    renderCallPanel(); // swaps the main panel's empty state over to explaining the mic problem
     return false;
   }
 }
@@ -1604,10 +1778,23 @@ async function main() {
 
   callBtn.addEventListener('click', () => {
     const id = peerIdInput.value.trim();
-    if (!id || id === peer.id) return;
+    if (!id) { peerIdInput.focus(); return; }
+    if (id === peer.id) { toast(t('toast.ownId'), 'info'); return; }
+    // Real IDs are 'p-<uuid>'; what people see on screen is the Name#1234 tag, so
+    // that's the likeliest wrong thing to get pasted here.
+    if (!id.startsWith('p-') && /#[0-9a-z]{4}$/i.test(id)) { toast(t('toast.looksLikeTag'), 'info'); return; }
+    const existing = loadFriends().find((f) => f.id === id);
+    if (existing && existing.status !== 'pending') {
+      toast(t('toast.alreadyFriend', { name: nameFor(existing) }), 'info');
+      peerIdInput.value = '';
+      return;
+    }
+    // Re-adding someone still pending just sends the request again — the way to
+    // retry if they weren't online the first time.
     addFriend(id, 'pending');
     sendFriendRequest(id);
     peerIdInput.value = '';
+    toast(t('toast.requestSent'), 'info');
     log(t('log.friendRequestSent', { name: friendName(id) }));
   });
 
@@ -1616,22 +1803,38 @@ async function main() {
   });
 }
 
-copyBtn.addEventListener('click', () => {
+// `label` is a function rather than a string so the button reverts to text in
+// whatever language is current by then, not the one it was clicked in.
+function copyMyId(btn, label) {
   if (!peer) return;
   navigator.clipboard.writeText(peer.id); // the real connection ID, not the pretty tag shown on screen
-  copyBtn.textContent = t('settings.copied');
-  setTimeout(() => (copyBtn.textContent = t('settings.copy')), 1200);
-});
+  btn.textContent = t('settings.copied');
+  setTimeout(() => (btn.textContent = label()), 1200);
+}
+
+copyBtn.addEventListener('click', () => copyMyId(copyBtn, () => t('settings.copy')));
+myIdEl.addEventListener('click', () => copyMyId(copyBtn, () => t('settings.copy')));
 
 settingsBtn.addEventListener('click', () => {
   settingsNameInput.value = getMyUsername();
   noiseSuppressionToggle.checked = getNoiseSuppressionEnabled();
   shareActivityToggle.checked = getShareActivityEnabled();
+  for (const b of settingsTabBtns) b.classList.toggle('active', b.dataset.tab === 'account');
+  for (const pane of settingsPanes) pane.hidden = pane.dataset.pane !== 'account';
   settingsModal.hidden = false;
   appVersionEl.textContent = '';
   window.__TAURI__?.app.getVersion().then((v) => { appVersionEl.textContent = `patycord v${v}`; });
 });
 closeSettingsBtn.addEventListener('click', () => { settingsModal.hidden = true; });
+
+const settingsTabBtns = document.querySelectorAll('.settingsTabBtn');
+const settingsPanes = document.querySelectorAll('.settingsPane');
+for (const btn of settingsTabBtns) {
+  btn.addEventListener('click', () => {
+    for (const b of settingsTabBtns) b.classList.toggle('active', b === btn);
+    for (const pane of settingsPanes) pane.hidden = pane.dataset.pane !== btn.dataset.tab;
+  });
+}
 noiseSuppressionToggle.addEventListener('change', () => {
   setNoiseSuppressionEnabled(noiseSuppressionToggle.checked);
 });
@@ -1681,6 +1884,9 @@ function applyLanguage() {
   }
   muteBtn.title = muted ? t('main.unmute') : t('main.mute');
   shareScreenBtn.title = screenStream ? t('main.stopSharing') : t('main.shareScreen');
+  if (openChatPeerId === null && calls.size > 0) chatMessagesEl.dataset.empty = t('chat.emptyCall');
+  else chatMessagesEl.dataset.empty = t('chat.emptyDm');
+  emptyStateVariant = null; // force renderEmptyState (via renderPeerList below) to rebuild in the new language
   renderMyActivity();
   renderPeerList();
   renderIncomingCalls();
@@ -1701,6 +1907,11 @@ muteBtn.addEventListener('click', () => {
   muteBtn.classList.toggle('active', muted);
   muteBtn.innerHTML = muted ? ICONS.micOff : ICONS.mic;
   playMuteSound(muted);
+  renderCallPanel(); // our own participant tile shows the muted badge
+});
+
+leaveCallBtn.addEventListener('click', () => {
+  for (const id of [...calls.keys()]) hangUp(id);
 });
 
 shareScreenBtn.addEventListener('click', () => {
@@ -1710,6 +1921,7 @@ shareScreenBtn.addEventListener('click', () => {
 
 logToggleBtn.addEventListener('click', () => {
   logPanel.hidden = !logPanel.hidden;
+  logToggleBtn.classList.toggle('open', !logPanel.hidden);
 });
 
 usernameInput.addEventListener('input', () => {
@@ -1719,6 +1931,7 @@ usernameInput.addEventListener('input', () => {
 
 muteBtn.innerHTML = ICONS.mic;
 shareScreenBtn.innerHTML = ICONS.monitor;
+leaveCallBtn.innerHTML = ICONS.phoneOff;
 logToggleBtn.innerHTML = ICONS.list;
 settingsBtn.innerHTML = ICONS.gear;
 
@@ -1738,6 +1951,19 @@ function closeReleaseNotes() {
 }
 
 closeReleaseNotesBtn.addEventListener('click', closeReleaseNotes);
+
+// Esc, or a click on the dimmed backdrop, closes whichever dismissible modal or
+// popover is open — but never the first-run name prompt, which needs an answer.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (!releaseNotesModalEl.hidden) closeReleaseNotes();
+  else if (!settingsModal.hidden) settingsModal.hidden = true;
+  closeVolumePopover();
+  closeScreenSharePopover();
+});
+for (const modal of [settingsModal, releaseNotesModalEl]) {
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.hidden = true; });
+}
 
 // --- auto-update -------------------------------------------------------
 // Checks GitHub Releases (via the endpoint in tauri.conf.json) for a newer
