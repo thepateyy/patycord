@@ -1,4 +1,4 @@
-// Regenerates ui/game-names.json from Discord's public (undocumented but widely
+// Regenerates src-tauri/game-names.json from Discord's public (undocumented but widely
 // used by third-party rich-presence tools) "detectable applications" list — the
 // same data Discord's own client uses to turn a running .exe into a pretty game
 // name. Not run automatically; re-run by hand occasionally to pick up new games:
@@ -16,7 +16,7 @@ const fs = require('fs');
 const path = require('path');
 
 const SOURCE_URL = 'https://discord.com/api/v9/applications/detectable';
-const OUT_PATH = path.join(__dirname, '..', 'ui', 'game-names.json');
+const OUT_PATH = path.join(__dirname, '..', 'src-tauri', 'game-names.json');
 
 const AMBIGUOUS_HOST_PROCESSES = new Set([
   'java', 'javaw', 'python', 'python3', 'pythonw', 'wine', 'wine64',

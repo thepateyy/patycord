@@ -284,7 +284,14 @@ function getShareActivityEnabled() {
 
 function setShareActivityEnabled(enabled) {
   localStorage.setItem('patycord.shareActivity', enabled ? 'on' : 'off');
+  syncActivityDetection();
   broadcastActivity(); // tell anyone already connected right away, rather than waiting for it to next change
+}
+
+// The Rust side only scans running processes while sharing is on — see
+// set_activity_detection in lib.rs. A no-op outside the Tauri app.
+function syncActivityDetection() {
+  window.__TAURI__?.core?.invoke('set_activity_detection', { enabled: getShareActivityEnabled() }).catch(() => {});
 }
 
 // What to put in outgoing 'hello'/'activity' messages — never the real value
@@ -300,10 +307,14 @@ function getNoiseSuppressionEnabled() {
 function setNoiseSuppressionEnabled(enabled) {
   localStorage.setItem('patycord.noiseSuppression', enabled ? 'on' : 'off');
   rnnoiseEnabled = enabled;
-  if (!rnnoiseModule) {
-    // RNNoise didn't load — fall back to toggling the browser's own built-in suppression.
-    localStream?.getAudioTracks()[0]?.applyConstraints({ noiseSuppression: enabled, voiceIsolation: enabled }).catch(() => {});
-  }
+  // RNNoise follows rnnoiseEnabled live once it's loaded; otherwise there's only
+  // anything to change if the mic is open right now (mid-call). Turning it on then
+  // loads RNNoise on the spot — micConstraints falls back to the browser's own
+  // built-in suppression if that fails, same as when it's switched off.
+  if (rnnoiseModule || !localStream) return;
+  const applyToMic = () => localStream?.getAudioTracks()[0]?.applyConstraints(micConstraints().audio).catch(() => {});
+  if (enabled) loadRNNoise().then(applyToMic);
+  else applyToMic();
 }
 
 function getScreenShareResolution() {
@@ -430,7 +441,8 @@ function addFriend(id, status = 'accepted') {
 // Someone told us their name (via the data-connection handshake) — update our live
 // cache and, if we've saved them as a friend, their stored name too.
 function learnName(id, name) {
-  if (!name) return;
+  // Every presence probe re-announces the same name — only re-render on an actual change.
+  if (!name || remoteNames.get(id) === name) return;
   remoteNames.set(id, name);
   const friends = loadFriends();
   const friend = friends.find((f) => f.id === id);
@@ -442,27 +454,12 @@ function learnName(id, name) {
   renderIncomingCalls();
 }
 
-// exe stem (no .exe) -> pretty game name, sourced from Discord's own "detectable
-// applications" list — see scripts/update-game-names.js for how it's built and
-// refreshed. Loaded async: activity shows the raw process name until this lands,
-// and forever for anything not in Discord's list.
-let gameNames = null;
-fetch('./game-names.json')
-  .then((r) => r.json())
-  .then((data) => {
-    gameNames = data;
-    renderMyActivity();
-    scheduleRenderPeerList();
-  })
-  .catch(() => {}); // no pretty names, not fatal — raw exe names still show
-
-function prettyActivityName(raw) {
-  return gameNames?.[raw.toLowerCase()] || raw;
-}
-
+// Activity strings are already display names ("Counter-Strike 2", not "cs2") —
+// lib.rs resolves them against Discord's game list before they ever reach us,
+// so there's no 10k-entry lookup table to keep in memory here.
 function renderMyActivity() {
   if (myActivity) {
-    myActivityEl.textContent = t('friend.playing', { name: prettyActivityName(myActivity) });
+    myActivityEl.textContent = t('friend.playing', { name: myActivity });
     myActivityEl.hidden = false;
   } else {
     myActivityEl.hidden = true;
@@ -515,11 +512,17 @@ function handleFriendDecline(id) {
 // Short synthesized blips for action feedback — no audio files to ship,
 // just a couple of oscillator tones with a quick fade so they don't click.
 
+// A running AudioContext keeps an output stream open and its render thread
+// ticking even while silent, so it's suspended again shortly after the last
+// tone instead of idling for the rest of the session after the first blip.
 let uiSoundCtx = null;
+let uiSoundIdleTimer = null;
 function playTone(freq, durationMs, { type = 'sine', gain = 0.15, delayMs = 0 } = {}) {
   try {
     if (!uiSoundCtx) uiSoundCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (uiSoundCtx.state === 'suspended') uiSoundCtx.resume();
+    clearTimeout(uiSoundIdleTimer);
+    uiSoundIdleTimer = setTimeout(() => uiSoundCtx.suspend().catch(() => {}), delayMs + durationMs + 1000);
     const start = uiSoundCtx.currentTime + delayMs / 1000;
     const osc = uiSoundCtx.createOscillator();
     const env = uiSoundCtx.createGain();
@@ -593,6 +596,10 @@ let logLines = [];
 function log(msg) {
   logLines.unshift(`[${new Date().toLocaleTimeString()}] ${msg}`);
   if (logLines.length > LOG_LIMIT) logLines.length = LOG_LIMIT;
+  if (!logPanel.hidden) renderLog(); // otherwise rendered when the panel is opened
+}
+
+function renderLog() {
   statusEl.textContent = logLines.join('\n');
 }
 
@@ -665,7 +672,7 @@ function requestRemoveFriend(id) {
 
 function friendStatusHtml({ inCall, connected, isOnline, activity }) {
   if (inCall) return `<span class="status online">${connected ? t('status.inCall') : t('status.calling')}</span>`;
-  if (activity) return `<span class="activity">${escapeHtml(t('friend.playing', { name: prettyActivityName(activity) }))}</span>`;
+  if (activity) return `<span class="activity">${escapeHtml(t('friend.playing', { name: activity }))}</span>`;
   return `<span class="status${isOnline ? ' online' : ''}">${isOnline ? t('status.online') : t('status.offline')}</span>`;
 }
 
@@ -815,6 +822,8 @@ function renderCallPanel() {
   if (!inCall && screenStream) stopScreenShare();
 
   if (wasInCall && !inCall) callChatHistory = []; // call chat ends with the call, like it always has
+  if (inCall && !wasInCall) startMic();
+  else if (!inCall && wasInCall) stopMic();
   wasInCall = inCall;
   updateChatView();
 }
@@ -1054,8 +1063,8 @@ function ensureDataConnection(id) {
 
 // Tells `id` "I added you" so they get an Accept prompt instead of having to
 // separately paste your ID back — only one side needs to do the copy/paste dance.
-// Best-effort: if they're offline right now it just silently doesn't arrive, same
-// as it always has for anyone not currently online.
+// If they're offline right now it doesn't arrive, but retryFriendRequest keeps
+// re-sending it from the presence sweep until it does.
 function sendFriendRequest(id) {
   const conn = ensureDataConnection(id);
   const send = () => conn.send({ type: 'friend-request', name: getMyUsername() });
@@ -1100,10 +1109,26 @@ function connectTo(id) {
 // ID — but never the roster or activity: peer IDs are unguessable, but there's no
 // reason to hand a stranger who's in a call with us, or let them make us auto-dial
 // whatever list of IDs they feel like sending.
+//
+// A presence probe (see probePresence) only gets the `hello`: it's torn down again
+// within a second, so it mustn't displace a real connection in dataConnections,
+// count as someone joining the call, or be handed queued DMs — the prober only
+// reads the hello off it, so anything else sent there would just be lost.
 function handleIncomingDataConnection(conn) {
+  const isProbe = conn.metadata?.probe === true;
   conn.on('open', () => {
     const isFriend = acceptedFriends().some((f) => f.id === conn.peer);
     conn.send({ type: 'hello', name: getMyUsername(), activity: isFriend ? outgoingActivity() : null });
+    if (isFriend) {
+      // They just reached out, so they're online — no need to wait for our own
+      // (deliberately infrequent, for offline friends) sweep to notice.
+      markOnline(conn.peer);
+    }
+    if (isProbe) {
+      // Can't hand queued DMs over the probe itself — open a real connection for them instead.
+      if (isFriend && pendingMessages.get(conn.peer)?.length) ensureDataConnection(conn.peer);
+      return;
+    }
     if (isFriend) {
       const roster = [...calls.keys()].filter((id) => id !== conn.peer);
       conn.send({ type: 'roster', peers: roster });
@@ -1302,21 +1327,33 @@ function probePresence(id) {
   // PeerConnection + DataChannel handshake, held open, then torn down again.
   const existing = dataConnections.get(id);
   if (existing?.open) {
-    if (presence.get(id) !== true) { presence.set(id, true); scheduleRenderPeerList(); }
+    markOnline(id);
     return;
   }
+  if (activeProbes.has(id)) return; // previous one still in flight
   let settled = false;
-  const probe = peer.connect(id, { reliable: false });
+  // Tagged so the other end knows it's only a presence check (see
+  // handleIncomingDataConnection) — older clients just ignore the metadata.
+  const probe = peer.connect(id, { reliable: false, metadata: { probe: true } });
   const finish = (online) => {
     if (settled) return;
     settled = true;
-    presence.set(id, online);
-    if (!online) setPeerActivity(id, null); // stale activity shouldn't outlive them going offline
-    scheduleRenderPeerList();
-  };
-  const timer = setTimeout(() => { finish(false); try { probe.close(); } catch {} }, 4000);
-  probe.on('open', () => {
     clearTimeout(timer);
+    activeProbes.delete(id);
+    if (online) {
+      markOnline(id);
+      // Anything we queued for them while they were away goes out now, over a
+      // real connection — not on whenever we next happen to open a chat with them.
+      if (pendingMessages.get(id)?.length) ensureDataConnection(id);
+    } else {
+      setPeerActivity(id, null); // stale activity shouldn't outlive them going offline
+      if (presence.get(id) !== false) { presence.set(id, false); scheduleRenderPeerList(); }
+      try { probe.close(); } catch {}
+    }
+  };
+  const timer = setTimeout(() => finish(false), 4000);
+  activeProbes.set(id, () => finish(false)); // so a peer-unavailable error that beats the timeout can end it early
+  probe.on('open', () => {
     finish(true);
     probe.send({ type: 'hello', name: getMyUsername(), activity: outgoingActivity() });
     // Give their reply (sent back from handleIncomingDataConnection on their end) a
@@ -1325,16 +1362,60 @@ function probePresence(id) {
   });
   probe.on('data', (msg) => {
     if (!msg || typeof msg !== 'object') return; // same as handleDataMessage — this is untrusted wire data too
-    if (msg.type !== 'hello') return;
-    learnName(id, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
-    setPeerActivity(id, msg.activity);
+    if (msg.type === 'hello') {
+      learnName(id, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
+      setPeerActivity(id, msg.activity);
+    } else if (msg.type === 'chat') {
+      // Older clients flush queued DMs over whatever connection opens first,
+      // probes included — take them rather than silently dropping them.
+      handleDataMessage(id, msg);
+    }
   });
-  probe.on('error', () => { clearTimeout(timer); finish(false); try { probe.close(); } catch {} });
+  probe.on('error', () => finish(false));
 }
 
-function probeAllFriends() {
-  for (const friend of acceptedFriends()) probePresence(friend.id);
-  for (const friend of pendingOutgoingFriends()) retryFriendRequest(friend.id);
+const activeProbes = new Map(); // peerId -> ends that probe as "offline"
+
+function markOnline(id) {
+  if (presence.get(id) === true) return;
+  presence.set(id, true);
+  scheduleRenderPeerList();
+}
+
+// Every 10s while the window is visible. Friends already known to be online are
+// re-checked every sweep (so going offline shows up promptly); offline friends
+// and unanswered friend requests only every third — each attempt sets up a whole
+// WebRTC connection (ICE gathering, TURN allocation) just to find nobody home,
+// and a friend coming online announces themselves anyway: their own startup
+// sweep reaches us (see markOnline in handleIncomingDataConnection).
+const PRESENCE_SWEEP_MS = 10000;
+let presenceSweepCount = 1; // the sweep on connecting already covered everyone
+function probeAllFriends({ everyone = false } = {}) {
+  if (document.hidden) return; // nobody's looking at the list — catch up on becoming visible instead
+  const includeOffline = everyone || presenceSweepCount++ % 3 === 0;
+  for (const friend of acceptedFriends()) {
+    if (includeOffline || presence.get(friend.id)) probePresence(friend.id);
+  }
+  if (includeOffline) {
+    for (const friend of pendingOutgoingFriends()) retryFriendRequest(friend.id);
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && peer?.open) probeAllFriends({ everyone: true });
+});
+
+// PeerJS reports a connection attempt to someone offline only as a peer-level
+// 'peer-unavailable' error — it never closes the DataConnection itself, so
+// without this every DM, call or friend request aimed at an offline friend
+// would leave a dead RTCPeerConnection behind for the rest of the session.
+function dropDeadConnectionsTo(id) {
+  activeProbes.get(id)?.();
+  const conn = dataConnections.get(id);
+  if (conn && !conn.open) {
+    conn.close();
+    dataConnections.delete(id);
+  }
 }
 
 // A friend request only arrives if they're online the moment it's sent, so a
@@ -1605,6 +1686,10 @@ class RingBuffer {
     this.readIdx = 0;
     this.length = 0; // samples currently buffered
   }
+  clear() {
+    this.readIdx = 0;
+    this.length = 0;
+  }
   write(chunk) {
     for (let i = 0; i < chunk.length; i++) {
       this.buf[(this.readIdx + this.length) % this.capacity] = chunk[i];
@@ -1622,15 +1707,17 @@ class RingBuffer {
   }
 }
 
-// Runs the raw mic stream through RNNoise (when enabled) via a Web Audio graph and
-// returns a new MediaStream carrying the processed audio — this is what actually
-// goes out over WebRTC. Uses ScriptProcessorNode (deprecated but universally
-// supported, and simpler than an AudioWorklet for this scale) with internal ring
-// buffers, since RNNoise needs exactly 480-sample frames regardless of the
-// browser's own audio callback chunk size.
-function buildProcessedStream(rawStream) {
+// Builds the Web Audio graph the mic runs through on its way out — RNNoise when
+// enabled, a straight passthrough otherwise — and returns the MediaStream it
+// produces, which is what actually goes out over WebRTC. Built once and kept for
+// the whole session, so calls can be handed this stream before the mic itself is
+// even open; startMic/stopMic plug the mic in and out of it and pause the graph
+// between calls. Uses ScriptProcessorNode (deprecated but universally supported,
+// and simpler than an AudioWorklet for this scale) with internal ring buffers,
+// since RNNoise needs exactly 480-sample frames regardless of the browser's own
+// audio callback chunk size.
+function buildProcessedStream() {
   audioCtx = new AudioContext({ sampleRate: 48000 });
-  const source = audioCtx.createMediaStreamSource(rawStream);
   const processor = audioCtx.createScriptProcessor(4096, 1, 1);
 
   // 3x the callback size is comfortable headroom over the worst-case backlog
@@ -1646,6 +1733,17 @@ function buildProcessedStream(rawStream) {
     const input = e.inputBuffer.getChannelData(0);
     const output = e.outputBuffer.getChannelData(0);
 
+    if (audioBuffersStale) {
+      // Leftovers from the previous call — don't open the next one with them.
+      inputRing.clear();
+      outputRing.clear();
+      audioBuffersStale = false;
+    }
+    if (muted) {
+      // The muted track only delivers silence — nothing worth denoising.
+      output.fill(0);
+      return;
+    }
     if (!rnnoiseEnabled || !rnnoiseModule) {
       output.set(input);
       return;
@@ -1670,36 +1768,75 @@ function buildProcessedStream(rawStream) {
     }
   };
 
-  source.connect(processor);
   scriptProcessorNode = processor;
   const dest = audioCtx.createMediaStreamDestination();
   processor.connect(dest);
+  audioCtx.suspend().catch(() => {}); // idle until a call starts — see startMic
   return dest.stream;
 }
 
+function micConstraints() {
+  // With RNNoise doing the denoising, the browser's own suppression on top would
+  // just double-process the same audio through two different denoisers.
+  const builtInSuppression = rnnoiseModule ? false : getNoiseSuppressionEnabled();
+  return {
+    audio: { noiseSuppression: builtInSuppression, voiceIsolation: builtInSuppression, echoCancellation: true, autoGainControl: true },
+    video: false,
+  };
+}
+
+// The mic is only actually open while we're in a call: holding it the rest of the
+// time keeps Windows' "using your microphone" indicator on and the capture and
+// echo-cancellation pipeline running for nothing. Opened (and RNNoise loaded, the
+// first time — its WASM module reserves 16 MB up front) when a call starts, and
+// released again when the last one ends; see renderCallPanel.
+let micSourceNode = null;
+let micStarting = null;
+let audioBuffersStale = false;
+
+function startMic() {
+  if (localStream || micStarting) return;
+  micStarting = (async () => {
+    try {
+      if (rnnoiseEnabled && !rnnoiseModule) {
+        await loadRNNoise();
+        if (rnnoiseModule) log(t('log.rnnoiseActive'));
+      }
+      const stream = await navigator.mediaDevices.getUserMedia(micConstraints());
+      if (calls.size === 0) { // the call already ended while we were waiting on the mic
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      stream.getAudioTracks().forEach((track) => (track.enabled = !muted));
+      localStream = stream;
+      micSourceNode = audioCtx.createMediaStreamSource(stream);
+      micSourceNode.connect(scriptProcessorNode);
+      await audioCtx.resume();
+    } catch (err) {
+      toast(t('toast.micFailed', { error: err.message }));
+    } finally {
+      micStarting = null;
+    }
+  })();
+}
+
+function stopMic() {
+  localStream?.getTracks().forEach((track) => track.stop());
+  localStream = null;
+  micSourceNode?.disconnect();
+  micSourceNode = null;
+  audioBuffersStale = true;
+  audioCtx?.suspend().catch(() => {});
+}
+
+// Run once at launch, only to find out whether there's a usable mic at all — so a
+// problem shows up front instead of in the middle of someone's first call. The
+// mic is closed again straight away; startMic opens it for real per call.
 async function requestMic() {
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({
-      // Browser-level suppression stays on as a safety net until we know whether
-      // RNNoise actually loaded — if it does, we turn this off below to avoid
-      // double-processing the same audio through two different denoisers.
-      audio: { noiseSuppression: true, voiceIsolation: true, echoCancellation: true, autoGainControl: true },
-      video: false,
-    });
-    const settings = localStream.getAudioTracks()[0]?.getSettings();
-    log(t('log.micSettings', { json: JSON.stringify(settings) }));
-
-    rnnoiseEnabled = getNoiseSuppressionEnabled();
-    await loadRNNoise();
-    if (rnnoiseModule) {
-      localStream.getAudioTracks()[0].applyConstraints({ noiseSuppression: false, voiceIsolation: false }).catch(() => {});
-      processedStream = buildProcessedStream(localStream);
-      log(t('log.rnnoiseActive'));
-    } else {
-      processedStream = localStream;
-    }
-
-    return true;
+    const check = await navigator.mediaDevices.getUserMedia(micConstraints());
+    log(t('log.micSettings', { json: JSON.stringify(check.getAudioTracks()[0]?.getSettings()) }));
+    check.getTracks().forEach((track) => track.stop());
   } catch (err) {
     toast(t('toast.micFailed', { error: err.message }));
     micAccessFailed = true;
@@ -1708,6 +1845,9 @@ async function requestMic() {
     renderCallPanel(); // swaps the main panel's empty state over to explaining the mic problem
     return false;
   }
+  rnnoiseEnabled = getNoiseSuppressionEnabled();
+  processedStream = buildProcessedStream();
+  return true;
 }
 
 // PeerJS doesn't retry on its own after losing the signaling connection — we have
@@ -1735,9 +1875,9 @@ async function main() {
     myIdEl.removeAttribute('data-i18n'); // it's showing real content now — a static-translation sweep must never clobber it back to "connecting…"
     log(t('log.ready'));
     renderPeerList();
-    probeAllFriends();
+    probeAllFriends({ everyone: true });
     reconnectAttempts = 0; // a successful (re)connect resets the backoff
-    if (!presenceProbeInterval) presenceProbeInterval = setInterval(probeAllFriends, 10000);
+    if (!presenceProbeInterval) presenceProbeInterval = setInterval(probeAllFriends, PRESENCE_SWEEP_MS);
   });
 
   peer.on('call', (call) => {
@@ -1760,6 +1900,7 @@ async function main() {
     if (err.type === 'peer-unavailable') {
       const match = /peer\s+(\S+)/.exec(err.message || '');
       const id = match?.[1];
+      if (id) dropDeadConnectionsTo(id);
       if (id && calls.has(id) && !calls.get(id).audioEl) {
         presence.set(id, false);
         hangUp(id);
@@ -1900,9 +2041,8 @@ chatInputEl.addEventListener('keydown', (e) => {
 chatCloseBtn.addEventListener('click', closeChat);
 
 muteBtn.addEventListener('click', () => {
-  if (!localStream) return;
   muted = !muted;
-  localStream.getAudioTracks().forEach((track) => (track.enabled = !muted));
+  localStream?.getAudioTracks().forEach((track) => (track.enabled = !muted)); // startMic applies it too, if the mic isn't open yet
   muteBtn.title = muted ? t('main.unmute') : t('main.mute');
   muteBtn.classList.toggle('active', muted);
   muteBtn.innerHTML = muted ? ICONS.micOff : ICONS.mic;
@@ -1922,6 +2062,7 @@ shareScreenBtn.addEventListener('click', () => {
 logToggleBtn.addEventListener('click', () => {
   logPanel.hidden = !logPanel.hidden;
   logToggleBtn.classList.toggle('open', !logPanel.hidden);
+  if (!logPanel.hidden) renderLog();
 });
 
 usernameInput.addEventListener('input', () => {
@@ -2050,7 +2191,8 @@ async function init() {
   // Rust side polls running processes and tells us if a known game is open —
   // focused or just running in the background (or null if none is) — only fires in
   // the real Tauri app, never in a plain browser. We just relay whatever it says to
-  // friends; see lib.rs for the actual detection against ui/game-names.json.
+  // friends; see lib.rs for the actual detection against src-tauri/game-names.json.
+  syncActivityDetection(); // the Rust side starts with detection off until told otherwise
   window.__TAURI__?.event?.listen('active-app-changed', (event) => {
     myActivity = typeof event.payload === 'string' ? event.payload : null;
     renderMyActivity();
