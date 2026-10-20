@@ -45,18 +45,32 @@ fn allow_mic_permission(window: &tauri::WebviewWindow) {
 
 // "What are you playing" detection: is a known game currently running, focused or
 // not. "Known" means present in Discord's own detectable-applications list (see
-// ui/game-names.json and scripts/update-game-names.js) — an allowlist rather than
+// src-tauri/game-names.json and scripts/update-game-names.js) — an allowlist rather than
 // a denylist of obvious non-games, so random unrecognized apps never show up as
 // "playing" by accident. Embedded at compile time, so regenerating that JSON needs
-// a rebuild to take effect here (the frontend picks it up immediately either way).
+// a rebuild to take effect. Maps exe stem -> display name; the display name is
+// what gets emitted, so the frontend never has to load its own copy of the list.
 #[cfg(target_os = "windows")]
-fn known_games() -> &'static std::collections::HashSet<String> {
-    static GAMES: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
+fn known_games() -> &'static std::collections::HashMap<String, String> {
+    static GAMES: std::sync::OnceLock<std::collections::HashMap<String, String>> = std::sync::OnceLock::new();
     GAMES.get_or_init(|| {
-        let raw = include_str!("../../ui/game-names.json");
-        let map: std::collections::HashMap<String, String> = serde_json::from_str(raw).unwrap_or_default();
-        map.into_keys().collect()
+        let raw = include_str!("../game-names.json");
+        serde_json::from_str(raw).unwrap_or_default()
     })
+}
+
+// Off whenever the user has "Share what I'm playing" turned off — no point
+// snapshotting every running process every few seconds for a result nobody
+// will see. The frontend sets it on startup and whenever the toggle changes.
+#[cfg(target_os = "windows")]
+static ACTIVITY_DETECTION_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[tauri::command]
+fn set_activity_detection(enabled: bool) {
+    #[cfg(target_os = "windows")]
+    ACTIVITY_DETECTION_ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(not(target_os = "windows"))]
+    let _ = enabled;
 }
 
 #[cfg(target_os = "windows")]
@@ -93,33 +107,35 @@ fn foreground_process_name() -> Option<String> {
     }
 }
 
-// All currently running processes' executable names (lowercase, no .exe) — a
-// snapshot via the same lightweight API Task Manager itself uses, no per-process
+// The first running process (lowercase exe stem, no .exe) that `is_match` accepts —
+// a snapshot via the same lightweight API Task Manager itself uses, no per-process
 // handles opened (unlike foreground_process_name, which needs one to resolve the
-// full path).
+// full path). Stops at the first hit instead of collecting every name first.
 #[cfg(target_os = "windows")]
-fn running_process_names() -> Vec<String> {
+fn find_running_process(is_match: impl Fn(&str) -> bool) -> Option<String> {
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
         TH32CS_SNAPPROCESS,
     };
 
-    let mut names = Vec::new();
+    let mut found = None;
     unsafe {
-        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
-            return names;
-        };
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
         let mut entry = PROCESSENTRY32W {
             dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
             ..Default::default()
         };
+        let mut name = String::new(); // reused across entries rather than allocating one per process
         if Process32FirstW(snapshot, &mut entry).is_ok() {
             loop {
                 let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
-                let filename = String::from_utf16_lossy(&entry.szExeFile[..len]);
-                let stem = filename.strip_suffix(".exe").unwrap_or(&filename);
-                if !stem.is_empty() {
-                    names.push(stem.to_lowercase());
+                name.clear();
+                name.extend(char::decode_utf16(entry.szExeFile[..len].iter().copied()).map(|c| c.unwrap_or('\u{FFFD}')));
+                name.make_ascii_lowercase();
+                let stem = name.strip_suffix(".exe").unwrap_or(&name);
+                if !stem.is_empty() && is_match(stem) {
+                    found = Some(stem.to_string());
+                    break;
                 }
                 if Process32NextW(snapshot, &mut entry).is_err() {
                     break;
@@ -128,24 +144,22 @@ fn running_process_names() -> Vec<String> {
         }
         let _ = windows::Win32::Foundation::CloseHandle(snapshot);
     }
-    names
+    found
 }
 
+// The display name of whichever known game is running, if any.
 #[cfg(target_os = "windows")]
 fn detect_running_game() -> Option<String> {
     let games = known_games();
 
     // Prefer whatever's actually focused, if it happens to be a known game — avoids
     // ties when several are open at once (e.g. a launcher plus the game itself).
-    if let Some(fg) = foreground_process_name() {
-        if games.contains(&fg) {
-            return Some(fg);
-        }
-    }
-
-    // Otherwise scan everything running, so a minimized or alt-tabbed-away-from
-    // game still counts.
-    running_process_names().into_iter().find(|name| games.contains(name))
+    let exe = foreground_process_name()
+        .filter(|fg| games.contains_key(fg))
+        // Otherwise scan everything running, so a minimized or alt-tabbed-away-from
+        // game still counts.
+        .or_else(|| find_running_process(|name| games.contains_key(name)))?;
+    games.get(&exe).cloned()
 }
 
 // A single encrypted-at-rest blob (one JSON object holding friends, chat history,
@@ -409,7 +423,8 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             secure_store::load_secure_store,
-            secure_store::save_secure_store
+            secure_store::save_secure_store,
+            set_activity_detection
         ])
         .setup(|_app| {
             #[cfg(target_os = "windows")]
@@ -422,7 +437,11 @@ pub fn run() {
                 std::thread::spawn(move || {
                     let mut last: Option<String> = None;
                     loop {
-                        let current = detect_running_game();
+                        let current = if ACTIVITY_DETECTION_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
+                            detect_running_game()
+                        } else {
+                            None
+                        };
                         if current != last {
                             last = current.clone();
                             let _ = app_handle.emit("active-app-changed", current);
