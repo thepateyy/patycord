@@ -1334,6 +1334,21 @@ function probePresence(id) {
 
 function probeAllFriends() {
   for (const friend of acceptedFriends()) probePresence(friend.id);
+  for (const friend of pendingOutgoingFriends()) retryFriendRequest(friend.id);
+}
+
+// A friend request only arrives if they're online the moment it's sent, so a
+// pending one is re-sent on every presence sweep until a connection to them
+// actually opens — i.e. as soon as they next start patycord. Goes over the
+// regular, long-lived data connection rather than a throwaway presence probe,
+// so their Accept/Decline (which could come much later) still has a way back.
+// Once that connection is open there's nothing to redo: the request went out
+// when it opened, and handleFriendRequest on their end ignores repeats anyway.
+function retryFriendRequest(id) {
+  const existing = dataConnections.get(id);
+  if (existing?.open) return;
+  if (existing) { existing.close(); dataConnections.delete(id); } // a dead attempt from while they were offline
+  sendFriendRequest(id);
 }
 
 // Like friendName(id), but for call sites that already have the friend record in
