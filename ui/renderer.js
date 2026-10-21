@@ -1,4 +1,3 @@
-import createRNNWasmModule from './rnnoise.js';
 import { t, getLanguage, setLanguage, applyStaticTranslations, LANGUAGES } from './i18n.js';
 
 const myIdEl = document.getElementById('myId');
@@ -12,6 +11,17 @@ const settingsNameInput = document.getElementById('settingsNameInput');
 const settingsSaveNameBtn = document.getElementById('settingsSaveNameBtn');
 const noiseSuppressionToggle = document.getElementById('noiseSuppressionToggle');
 const shareActivityToggle = document.getElementById('shareActivityToggle');
+const friendsOnlyCallsToggle = document.getElementById('friendsOnlyCallsToggle');
+const micSelectEl = document.getElementById('micSelect');
+const micMeterFillEl = document.getElementById('micMeterFill');
+const speakerSelectEl = document.getElementById('speakerSelect');
+const speakerTestBtn = document.getElementById('speakerTestBtn');
+const pttToggle = document.getElementById('pttToggle');
+const closeToTrayToggle = document.getElementById('closeToTrayToggle');
+const startWithWindowsToggle = document.getElementById('startWithWindowsToggle');
+const notificationsToggle = document.getElementById('notificationsToggle');
+const pttKeyRow = document.getElementById('pttKeyRow');
+const pttKeyBtn = document.getElementById('pttKeyBtn');
 const languageSelectEl = document.getElementById('languageSelect');
 const usernameModal = document.getElementById('usernameModal');
 const usernameInput = document.getElementById('usernameInput');
@@ -86,6 +96,7 @@ const pendingFriendRequests = new Map(); // peerId -> name, awaiting Accept/Decl
 // point module-level code runs synchronously.
 let chatHistories = new Map(); // peerId -> [{ fromId, text }], per-friend DMs — independent of calls, persisted encrypted (see secureStore)
 let pendingMessages = new Map(); // peerId -> [{ type, scope, text }], DMs sent while they were offline — flushed once a connection to them opens
+let unreadCounts = new Map(); // peerId -> DMs from them not yet seen (their thread wasn't open), persisted like the rest
 let openChatPeerId = null; // whichever friend's DM thread is currently showing, or null (showing call chat / nothing)
 let callChatHistory = []; // shared broadcast thread for whoever's in the current call — resets when the call ends, like it always has
 let wasInCall = false; // so renderCallPanel() can detect the moment a call actually ends, to reset callChatHistory
@@ -166,7 +177,7 @@ const ICONS = {
 // (or another process reading it directly) can't be decrypted without also being
 // that user. Cosmetic prefs (language, noise suppression, screen-share quality,
 // ...) aren't worth the complexity and stay in plain localStorage.
-const SECURE_STORE_KEYS = ['myId', 'myUsername', 'friends', 'chatHistories', 'pendingMessages'];
+const SECURE_STORE_KEYS = ['myId', 'myUsername', 'friends', 'chatHistories', 'pendingMessages', 'unreadCounts'];
 const secureStore = {}; // populated by initSecureStore() before anything else runs
 let secureStoreReadOnly = false; // set when the store exists but couldn't be decrypted — see initSecureStore
 
@@ -288,6 +299,44 @@ function setShareActivityEnabled(enabled) {
   broadcastActivity(); // tell anyone already connected right away, rather than waiting for it to next change
 }
 
+// Rejects outside the Tauri app (browser testing), like a failed command would.
+function tauriInvoke(cmd, args) {
+  const invoke = window.__TAURI__?.core?.invoke;
+  return invoke ? invoke(cmd, args) : Promise.reject(new Error('not running in the app'));
+}
+
+// --- Windows notifications ---------------------------------------------------
+// Only while the window isn't in front (in the tray, minimized, or behind a
+// game) — otherwise the in-app ringing, banners and toasts already cover it.
+
+function getDesktopNotifications() {
+  return localStorage.getItem('patycord.notifications') !== 'off';
+}
+
+let flashingForCall = false;
+
+function appInBackground() {
+  return document.hidden || !document.hasFocus();
+}
+
+function notifyDesktop(title, body) {
+  if (!getDesktopNotifications() || !appInBackground()) return;
+  tauriInvoke('notify', { title, body }).catch(() => {});
+}
+
+// --- tray ------------------------------------------------------------------
+// Closing the window hides it to the tray (lib.rs) unless this is off — you're
+// only reachable while patycord runs. On by default.
+
+function getCloseToTray() {
+  return localStorage.getItem('patycord.closeToTray') !== 'off';
+}
+
+function syncTraySettings() {
+  tauriInvoke('set_close_to_tray', { enabled: getCloseToTray() }).catch(() => {});
+  tauriInvoke('set_tray_labels', { open: t('tray.open'), quit: t('tray.quit') }).catch(() => {});
+}
+
 // The Rust side only scans running processes while sharing is on — see
 // set_activity_detection in lib.rs. A no-op outside the Tauri app.
 function syncActivityDetection() {
@@ -307,13 +356,13 @@ function getNoiseSuppressionEnabled() {
 function setNoiseSuppressionEnabled(enabled) {
   localStorage.setItem('patycord.noiseSuppression', enabled ? 'on' : 'off');
   rnnoiseEnabled = enabled;
-  // RNNoise follows rnnoiseEnabled live once it's loaded; otherwise there's only
-  // anything to change if the mic is open right now (mid-call). Turning it on then
-  // loads RNNoise on the spot — micConstraints falls back to the browser's own
-  // built-in suppression if that fails, same as when it's switched off.
-  if (rnnoiseModule || !localStream) return;
+  noiseNode?.port.postMessage({ type: 'enabled', value: enabled });
+  // Turned on mid-call before RNNoise was ever needed: load it now. Either way
+  // re-apply the browser's own suppression, which micConstraints only uses when
+  // RNNoise isn't running.
+  if (!localStream) return;
   const applyToMic = () => localStream?.getAudioTracks()[0]?.applyConstraints(micConstraints().audio).catch(() => {});
-  if (enabled) loadRNNoise().then(applyToMic);
+  if (enabled) ensureRnnoise().then(applyToMic);
   else applyToMic();
 }
 
@@ -406,6 +455,27 @@ function savePendingMessages() {
   saveSecureStore();
 }
 
+function loadUnreadCounts() {
+  const raw = secureStore.unreadCounts && typeof secureStore.unreadCounts === 'object' ? secureStore.unreadCounts : {};
+  return new Map(Object.entries(raw).filter(([id, n]) => id && Number.isInteger(n) && n > 0));
+}
+
+function setUnread(peerId, count) {
+  if ((unreadCounts.get(peerId) || 0) === count) return;
+  if (count > 0) unreadCounts.set(peerId, count);
+  else unreadCounts.delete(peerId);
+  secureStore.unreadCounts = Object.fromEntries(unreadCounts);
+  saveSecureStore();
+  renderUnreadTitle();
+  scheduleRenderPeerList();
+}
+
+// "(3) patycord" — visible on the taskbar button and in Alt+Tab.
+function renderUnreadTitle() {
+  const total = [...unreadCounts.values()].reduce((a, b) => a + b, 0);
+  document.title = total ? `(${total}) patycord` : 'patycord';
+}
+
 // Entries saved before the pending/accepted split have no `status` field —
 // treat that as 'accepted' so existing friends don't vanish.
 function acceptedFriends() {
@@ -491,6 +561,7 @@ function removeFriend(id) {
   saveChatHistories();
   pendingMessages.delete(id);
   savePendingMessages();
+  setUnread(id, 0);
   if (openChatPeerId === id) closeChat();
   if (!calls.has(id)) { dataConnections.get(id)?.close(); dataConnections.delete(id); } // keep it if still mid-call
   renderPeerList();
@@ -519,7 +590,10 @@ let uiSoundCtx = null;
 let uiSoundIdleTimer = null;
 function playTone(freq, durationMs, { type = 'sine', gain = 0.15, delayMs = 0 } = {}) {
   try {
-    if (!uiSoundCtx) uiSoundCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (!uiSoundCtx) {
+      uiSoundCtx = new (window.AudioContext || window.webkitAudioContext)();
+      applySpeakerTo(uiSoundCtx);
+    }
     if (uiSoundCtx.state === 'suspended') uiSoundCtx.resume();
     clearTimeout(uiSoundIdleTimer);
     uiSoundIdleTimer = setTimeout(() => uiSoundCtx.suspend().catch(() => {}), delayMs + durationMs + 1000);
@@ -703,7 +777,8 @@ function renderPeerList() {
     const activity = isOnline ? activityByPeer.get(friend.id) : null;
     const confirming = confirmRemoveId === friend.id;
     const li = document.createElement('li');
-    li.className = 'friendRow';
+    const unread = unreadCounts.get(friend.id) || 0;
+    li.className = 'friendRow' + (unread ? ' unread' : '');
     li.innerHTML = `
       <span class="who" title="${escapeHtml(tagFor(friend.id, name))}">
         <span class="avatarWrap">
@@ -718,7 +793,7 @@ function renderPeerList() {
       <span class="actions">
         ${confirming ? '' : `
         ${inCall || isOnline ? `<button class="callToggleBtn ${inCall ? 'hangupBtn' : 'callBtnIcon'}" title="${inCall ? (connected ? t('sidebar.hangUp') : t('sidebar.cancel')) : t('sidebar.call')}"></button>` : ''}
-        ${isOnline ? `<button class="chatToggleBtn${friend.id === openChatPeerId ? ' active' : ''}" title="${t('sidebar.chat')}"></button>` : ''}`}
+        <button class="chatToggleBtn${friend.id === openChatPeerId ? ' active' : ''}${isOnline ? '' : ' offline'}" title="${isOnline ? t('sidebar.chat') : t('sidebar.chatOffline')}"></button>`}
         <button class="removeBtn ghost${confirming ? ' confirm' : ''}" title="${t('sidebar.remove')}">${confirming ? t('sidebar.removeConfirm') : '×'}</button>
       </span>`;
     const callToggleBtn = li.querySelector('.callToggleBtn');
@@ -732,6 +807,7 @@ function renderPeerList() {
     const chatToggleBtn = li.querySelector('.chatToggleBtn');
     if (chatToggleBtn) {
       chatToggleBtn.innerHTML = ICONS.chat;
+      if (unread) chatToggleBtn.insertAdjacentHTML('beforeend', `<span class="unreadBadge">${unread > 99 ? '99+' : unread}</span>`);
       chatToggleBtn.addEventListener('click', () => {
         if (openChatPeerId === friend.id) closeChat();
         else openChatWith(friend.id);
@@ -785,21 +861,23 @@ function renderCallPanel() {
   // Ourselves first, so it's obvious at a glance whether we're muted.
   if (inCall) {
     const me = document.createElement('div');
-    me.className = 'participant';
+    me.className = 'participant' + (speakingNow.has(SELF) ? ' speaking' : '');
+    me.dataset.peerId = SELF;
     me.innerHTML = `
       <span class="avatarWrap">
         ${avatarHtml(getMyPersistentId(), getMyUsername())}
         ${muted ? `<span class="mutedBadge" title="${t('main.muted')}">${ICONS.micOff}</span>` : ''}
       </span>
       <span class="pname">${escapeHtml(getMyUsername())}</span>
-      <span class="pname sub">${muted ? t('main.muted') : t('main.you')}</span>`;
+      <span class="pname sub">${muted ? t('main.muted') : pushToTalkActive() ? t('main.pttHint', { key: escapeHtml(getPttKey().label) }) : t('main.you')}</span>`;
     callParticipantsEl.appendChild(me);
   }
 
   for (const [id, entry] of calls) {
     const name = friendName(id);
     const div = document.createElement('div');
-    div.className = 'participant' + (entry.audioEl ? '' : ' dialing');
+    div.className = 'participant' + (entry.audioEl ? '' : ' dialing') + (speakingNow.has(id) ? ' speaking' : '');
+    div.dataset.peerId = id;
     div.innerHTML = `
       ${avatarHtml(id, name)}
       <span class="pname">${escapeHtml(name)}</span>
@@ -822,8 +900,8 @@ function renderCallPanel() {
   if (!inCall && screenStream) stopScreenShare();
 
   if (wasInCall && !inCall) callChatHistory = []; // call chat ends with the call, like it always has
-  if (inCall && !wasInCall) startMic();
-  else if (!inCall && wasInCall) stopMic();
+  if (inCall && !wasInCall) { startMic(); startSpeakingWatch(); syncPushToTalk(); }
+  else if (!inCall && wasInCall) { stopMic(); stopSpeakingWatch(); syncPushToTalk(); }
   wasInCall = inCall;
   updateChatView();
 }
@@ -864,6 +942,56 @@ function renderEmptyState(inCall) {
       <h2>${t('main.notInCallTitle')}</h2>
       <p>${t('main.notInCall', { dot: '<span class="inlineDot"></span>', phone: `<span class="inlineIcon">${ICONS.phone}</span>` })}</p>`;
   }
+}
+
+// --- who's talking ------------------------------------------------------
+// A green ring around whoever's speaking, ourselves included. Each participant's
+// audio (and our own outgoing audio, via micOut) feeds an AnalyserNode that's
+// read ten times a second, only while we're in a call. A short hold keeps the
+// ring from flickering between words.
+
+const SELF = 'self';
+const SPEAKING_THRESHOLD_DB = -50;
+const SPEAKING_HOLD_MS = 300;
+const speakingAnalysers = new Map(); // peerId (or SELF) -> { analyser, samples }
+const speakingNow = new Set();
+const lastHeardAt = new Map();
+let speakingWatchTimer = null;
+
+function makeAnalyser(sourceNode) {
+  const analyser = sourceNode.context.createAnalyser();
+  analyser.fftSize = 512;
+  sourceNode.connect(analyser);
+  return { analyser, samples: new Float32Array(analyser.fftSize) };
+}
+
+function levelDb({ analyser, samples }) {
+  analyser.getFloatTimeDomainData(samples);
+  let sum = 0;
+  for (const s of samples) sum += s * s;
+  return 20 * Math.log10(Math.sqrt(sum / samples.length) || 1e-6);
+}
+
+function startSpeakingWatch() {
+  if (speakingWatchTimer) return;
+  speakingWatchTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [id, a] of speakingAnalysers) {
+      if (levelDb(a) > SPEAKING_THRESHOLD_DB) lastHeardAt.set(id, now);
+      const speaking = now - (lastHeardAt.get(id) || 0) < SPEAKING_HOLD_MS;
+      if (speaking === speakingNow.has(id)) continue;
+      if (speaking) speakingNow.add(id);
+      else speakingNow.delete(id);
+      callParticipantsEl.querySelector(`.participant[data-peer-id="${CSS.escape(id)}"]`)?.classList.toggle('speaking', speaking);
+    }
+  }, 100);
+}
+
+function stopSpeakingWatch() {
+  clearInterval(speakingWatchTimer);
+  speakingWatchTimer = null;
+  speakingNow.clear();
+  lastHeardAt.clear();
 }
 
 // --- per-participant volume popover -------------------------------
@@ -990,10 +1118,16 @@ document.addEventListener('click', (e) => {
 
 function attachRemoteStream(peerId, stream) {
   const audio = new Audio();
+  applySpeakerTo(audio);
   audio.srcObject = stream;
   audio.autoplay = true;
   const entry = calls.get(peerId) || {};
   entry.audioEl = audio;
+  if (audioCtx) {
+    const source = audioCtx.createMediaStreamSource(stream);
+    speakingAnalysers.set(peerId, makeAnalyser(source));
+    entry.analyserSource = source;
+  }
   calls.set(peerId, entry);
   updateOutgoingRingState();
   renderPeerList();
@@ -1016,6 +1150,9 @@ function removeCall(peerId) {
   if (entry && entry.audioEl) {
     entry.audioEl.srcObject = null;
   }
+  entry?.analyserSource?.disconnect();
+  speakingAnalysers.delete(peerId);
+  speakingNow.delete(peerId);
   calls.delete(peerId);
   updateOutgoingRingState();
   renderPeerList();
@@ -1051,8 +1188,9 @@ function ensureDataConnection(id) {
   if (dataConnections.has(id)) return dataConnections.get(id);
   const conn = peer.connect(id);
   conn.on('open', () => {
-    conn.send({ type: 'hello', name: getMyUsername(), activity: outgoingActivity() });
-    flushPendingMessages(id);
+    conn.send({ type: 'hello', name: getMyUsername(), activity: outgoingActivity(), acks: true });
+    // Queued DMs go out on *their* hello (see handleDataMessage), once we know
+    // whether they confirm delivery.
   });
   conn.on('data', (msg) => handleDataMessage(id, msg));
   conn.on('error', () => {}); // connectivity errors surface via the call itself
@@ -1118,7 +1256,7 @@ function handleIncomingDataConnection(conn) {
   const isProbe = conn.metadata?.probe === true;
   conn.on('open', () => {
     const isFriend = acceptedFriends().some((f) => f.id === conn.peer);
-    conn.send({ type: 'hello', name: getMyUsername(), activity: isFriend ? outgoingActivity() : null });
+    conn.send({ type: 'hello', name: getMyUsername(), activity: isFriend ? outgoingActivity() : null, acks: true });
     if (isFriend) {
       // They just reached out, so they're online — no need to wait for our own
       // (deliberately infrequent, for offline friends) sweep to notice.
@@ -1136,8 +1274,7 @@ function handleIncomingDataConnection(conn) {
         if (otherId !== conn.peer) otherConn.send({ type: 'peer-joined', id: conn.peer });
       }
     }
-    dataConnections.set(conn.peer, conn);
-    flushPendingMessages(conn.peer);
+    dataConnections.set(conn.peer, conn); // queued DMs follow on their hello
   });
   conn.on('data', (msg) => handleDataMessage(conn.peer, msg));
   conn.on('close', () => removeDataConnection(conn.peer, conn));
@@ -1151,6 +1288,8 @@ function handleDataMessage(fromId, msg) {
   if (msg.type === 'hello') {
     learnName(fromId, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
     setPeerActivity(fromId, msg.activity);
+    ackSupport.set(fromId, msg.acks === true);
+    flushPendingMessages(fromId);
   } else if (msg.type === 'activity') {
     setPeerActivity(fromId, msg.activity);
   } else if (msg.type === 'roster') {
@@ -1165,20 +1304,31 @@ function handleDataMessage(fromId, msg) {
       }
     }
   } else if (msg.type === 'peer-joined') {
-    if (typeof msg.id === 'string') log(t('log.joining', { name: friendName(msg.id) }));
+    if (typeof msg.id !== 'string') return;
+    log(t('log.joining', { name: friendName(msg.id) }));
+    // Only an introduction from someone we're actually in a call with counts —
+    // see admitIncomingCall.
+    if (calls.has(fromId)) introducedPeers.set(msg.id, Date.now());
   } else if (msg.type === 'chat') {
     const text = typeof msg.text === 'string' ? msg.text.slice(0, 2000) : '';
     if (msg.scope === 'dm') {
       if (!acceptedFriends().some((f) => f.id === fromId)) return; // only from accepted friends
-      addChatMessage(fromId, fromId, text);
-      if (fromId !== openChatPeerId) toast(t('toast.newMessage', { name: friendName(fromId) }), 'info');
+      const id = wireMessageId(msg.id);
+      const isNew = addChatMessage(fromId, fromId, text, { ts: wireTimestamp(msg.ts), id });
+      // Confirm even a duplicate — it means our earlier confirmation got lost.
+      if (id) dataConnections.get(fromId)?.send({ type: 'chat-ack', id });
+      if (isNew && fromId !== openChatPeerId) toast(t('toast.newMessage', { name: friendName(fromId) }), 'info');
+      if (isNew) notifyDesktop(friendName(fromId), text.length > 140 ? text.slice(0, 140) + '…' : text);
     } else {
       // 'call' scope (or unmarked, from an older client) — only from someone actually in the call with us.
       if (!calls.has(fromId)) return;
-      addCallChatMessage(fromId, text);
+      addCallChatMessage(fromId, text, wireTimestamp(msg.ts));
       // Only worth a toast if call chat isn't the thing currently on screen — e.g. a DM is open instead.
       if (openChatPeerId !== null) toast(t('toast.newCallMessage', { name: friendName(fromId) }), 'info');
     }
+  } else if (msg.type === 'chat-ack') {
+    const id = wireMessageId(msg.id);
+    if (id) markDelivered(fromId, [id]);
   } else if (msg.type === 'friend-request') {
     handleFriendRequest(fromId, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
   } else if (msg.type === 'friend-accept') {
@@ -1208,32 +1358,67 @@ function handleDataMessage(fromId, msg) {
 // falls back to call chat if a call is still active, rather than just
 // hiding the panel.
 
-function renderChatMessage(fromId, text) {
+// Today's messages show just the time; anything older gets the date too.
+// Entries saved before timestamps existed have no `ts` and show no time
+// rather than a made-up one.
+function formatChatTime(ts) {
+  if (!ts) return '';
+  const date = new Date(ts);
+  const time = date.toLocaleTimeString(getLanguage(), { hour: '2-digit', minute: '2-digit' });
+  if (date.toDateString() === new Date().toDateString()) return time;
+  return `${date.toLocaleDateString(getLanguage(), { month: 'short', day: 'numeric' })} ${time}`;
+}
+
+// A timestamp off the wire — the sender's clock, so a queued message keeps the
+// time it was actually written rather than when it finally arrived. Clamped to
+// now so a skewed (or hostile) clock can't date a message in the future.
+function wireTimestamp(ts) {
+  const now = Date.now();
+  return Number.isFinite(ts) && ts > 1.6e12 ? Math.min(ts, now) : now;
+}
+
+function wireMessageId(id) {
+  return typeof id === 'string' && id.length <= 64 ? id : null;
+}
+
+// `pending` marks one of our own DMs that hasn't been confirmed delivered yet.
+function renderChatMessage({ fromId, text, ts, id }, { pending = false } = {}) {
   const displayName = fromId === peer.id ? t('chat.you') : friendName(fromId);
   const div = document.createElement('div');
-  div.className = 'chatMsg';
-  const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  div.innerHTML = `<span class="who" style="color:${colorForId(fromId)}">${escapeHtml(displayName)}</span><span class="time">${time}</span><span class="text">${escapeHtml(text)}</span>`;
+  div.className = 'chatMsg' + (pending ? ' pending' : '');
+  if (id) div.dataset.msgId = id;
+  if (pending) div.title = t('chat.notDelivered');
+  div.innerHTML = `<span class="who" style="color:${colorForId(fromId)}">${escapeHtml(displayName)}</span><span class="time">${formatChatTime(ts)}</span><span class="text">${escapeHtml(text)}</span>`;
   chatMessagesEl.appendChild(div);
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 }
 
+function isQueued(peerId, id) {
+  return !!id && !!pendingMessages.get(peerId)?.some((m) => m.id === id);
+}
+
 // Records a message in `peerId`'s DM thread (fromId is whoever actually
 // sent it — us or them) and renders it live only if that thread is open.
-function addChatMessage(peerId, fromId, text) {
-  if (!text) return;
+// Returns false for a duplicate: a sender re-sends anything it hasn't had a
+// delivery confirmation for, so the same message can legitimately arrive twice.
+function addChatMessage(peerId, fromId, text, { ts = Date.now(), id = null } = {}) {
+  if (!text) return false;
   const history = chatHistories.get(peerId) || [];
-  history.push({ fromId, text });
+  if (id && history.some((m) => m.id === id && m.fromId === fromId)) return false;
+  const entry = { fromId, text, ts, ...(id && { id }) };
+  history.push(entry);
   if (history.length > CHAT_HISTORY_LIMIT) history.splice(0, history.length - CHAT_HISTORY_LIMIT);
   chatHistories.set(peerId, history);
   saveChatHistories();
-  if (peerId === openChatPeerId) renderChatMessage(fromId, text);
+  if (peerId === openChatPeerId) renderChatMessage(entry, { pending: isQueued(peerId, id) });
+  else if (fromId === peerId) setUnread(peerId, (unreadCounts.get(peerId) || 0) + 1);
+  return true;
 }
 
 // Queues a DM for `peerId` so it survives them being offline (or us restarting
-// before they come back) — delivered whenever a connection to them next opens,
-// see flushPendingMessages, called from both places a data connection can open
-// (ensureDataConnection and handleIncomingDataConnection).
+// before they come back). It stays queued until they confirm they got it (a
+// 'chat-ack') — handing it to a connection isn't enough, since a connection can
+// be dying without having noticed yet. See flushPendingMessages.
 function queueMessage(peerId, message) {
   const queue = pendingMessages.get(peerId) || [];
   queue.push(message);
@@ -1241,30 +1426,67 @@ function queueMessage(peerId, message) {
   savePendingMessages();
 }
 
+// peerId -> whether their client confirms delivery, learned from their 'hello'.
+// Older clients don't, and must not be waited on: they'd never confirm, so
+// we'd re-send forever and they — without de-duplication — would show every
+// re-send as a new message. Those get the old send-and-forget behavior.
+const ackSupport = new Map();
+
+// Sends everything queued for `peerId` if there's an open connection and we know
+// (from their hello) which delivery behavior they speak. Runs on their hello —
+// i.e. every time a connection to them opens — so anything an earlier connection
+// swallowed without a confirmation simply goes out again.
 function flushPendingMessages(peerId) {
   const conn = dataConnections.get(peerId);
   const queue = pendingMessages.get(peerId);
-  if (!conn?.open || !queue?.length) return;
+  if (!conn?.open || !queue?.length || !ackSupport.has(peerId)) return;
   for (const message of queue) conn.send(message);
-  pendingMessages.delete(peerId);
-  savePendingMessages();
+  if (!ackSupport.get(peerId)) {
+    markDelivered(peerId, queue.map((m) => m.id));
+    return;
+  }
+  // Pre-acknowledgement queue entries have no id to be confirmed by — send-and-forget those.
+  const unconfirmable = queue.filter((m) => !m.id);
+  if (unconfirmable.length) markDelivered(peerId, unconfirmable.map(() => undefined));
 }
 
-function addCallChatMessage(fromId, text) {
+// Drops delivered messages (by id; `undefined` ids drop id-less legacy entries)
+// from the queue, and un-dims them if their thread is on screen.
+function markDelivered(peerId, ids) {
+  const queue = pendingMessages.get(peerId);
+  if (!queue) return;
+  const remaining = queue.filter((m) => !ids.includes(m.id));
+  if (remaining.length === queue.length) return;
+  if (remaining.length) pendingMessages.set(peerId, remaining);
+  else pendingMessages.delete(peerId);
+  savePendingMessages();
+  if (peerId !== openChatPeerId) return;
+  for (const id of ids) {
+    if (!id) continue;
+    const el = chatMessagesEl.querySelector(`.chatMsg.pending[data-msg-id="${CSS.escape(id)}"]`);
+    if (el) { el.classList.remove('pending'); el.removeAttribute('title'); }
+  }
+}
+
+function addCallChatMessage(fromId, text, ts = Date.now()) {
   if (!text) return;
-  callChatHistory.push({ fromId, text });
+  const entry = { fromId, text, ts };
+  callChatHistory.push(entry);
   if (callChatHistory.length > CHAT_HISTORY_LIMIT) callChatHistory.splice(0, callChatHistory.length - CHAT_HISTORY_LIMIT);
-  if (openChatPeerId === null && calls.size > 0) renderChatMessage(fromId, text);
+  if (openChatPeerId === null && calls.size > 0) renderChatMessage(entry);
 }
 
 function openChatWith(peerId) {
   ensureDataConnection(peerId); // independent of any call — opens on demand
   openChatPeerId = peerId;
+  setUnread(peerId, 0);
   chatHeaderNameEl.textContent = friendName(peerId);
   chatCloseBtn.hidden = false;
   chatMessagesEl.innerHTML = '';
   chatMessagesEl.dataset.empty = t('chat.emptyDm');
-  for (const { fromId, text } of chatHistories.get(peerId) || []) renderChatMessage(fromId, text);
+  for (const entry of chatHistories.get(peerId) || []) {
+    renderChatMessage(entry, { pending: entry.fromId === peer.id && isQueued(peerId, entry.id) });
+  }
   chatPanelEl.hidden = false;
   chatInputEl.focus();
   renderPeerList(); // so the right friend's chat button shows as active
@@ -1277,7 +1499,7 @@ function showCallChat() {
   chatCloseBtn.hidden = true;
   chatMessagesEl.innerHTML = '';
   chatMessagesEl.dataset.empty = t('chat.emptyCall');
-  for (const { fromId, text } of callChatHistory) renderChatMessage(fromId, text);
+  for (const entry of callChatHistory) renderChatMessage(entry);
   chatPanelEl.hidden = false;
 }
 
@@ -1305,13 +1527,15 @@ function sendChatMessage() {
   if (!text) return;
   if (openChatPeerId !== null) {
     const peerId = openChatPeerId;
+    const message = { type: 'chat', scope: 'dm', text, id: crypto.randomUUID(), ts: Date.now() };
     ensureDataConnection(peerId);
-    queueMessage(peerId, { type: 'chat', scope: 'dm', text });
-    flushPendingMessages(peerId); // delivers now if already connected; otherwise waits for 'open'
-    addChatMessage(peerId, peer.id, text);
+    queueMessage(peerId, message);
+    addChatMessage(peerId, peer.id, text, { ts: message.ts, id: message.id }); // before the flush, so an old-client flush can un-dim it
+    flushPendingMessages(peerId); // delivers now if already connected; otherwise on their next hello
   } else if (calls.size > 0) {
-    for (const id of calls.keys()) dataConnections.get(id)?.send({ type: 'chat', scope: 'call', text });
-    addCallChatMessage(peer.id, text);
+    const ts = Date.now();
+    for (const id of calls.keys()) dataConnections.get(id)?.send({ type: 'chat', scope: 'call', text, ts });
+    addCallChatMessage(peer.id, text, ts);
   } else {
     return;
   }
@@ -1326,9 +1550,17 @@ function probePresence(id) {
   // a fresh probe anyway, and opening one is pure churn: a whole extra WebRTC
   // PeerConnection + DataChannel handshake, held open, then torn down again.
   const existing = dataConnections.get(id);
-  if (existing?.open) {
+  const iceState = existing?.peerConnection?.iceConnectionState;
+  if (existing?.open && iceState !== 'disconnected' && iceState !== 'failed') {
     markOnline(id);
     return;
+  }
+  // Still "open" but ICE has lost them: their app crashed or was killed without
+  // closing anything. PeerJS only closes the connection once ICE fully fails,
+  // ~30 s later — don't keep showing them online until then; drop it and probe.
+  if (existing?.open) {
+    existing.close();
+    dataConnections.delete(id);
   }
   if (activeProbes.has(id)) return; // previous one still in flight
   let settled = false;
@@ -1355,7 +1587,7 @@ function probePresence(id) {
   activeProbes.set(id, () => finish(false)); // so a peer-unavailable error that beats the timeout can end it early
   probe.on('open', () => {
     finish(true);
-    probe.send({ type: 'hello', name: getMyUsername(), activity: outgoingActivity() });
+    probe.send({ type: 'hello', name: getMyUsername(), activity: outgoingActivity(), acks: true });
     // Give their reply (sent back from handleIncomingDataConnection on their end) a
     // moment to arrive before tearing the probe connection back down.
     setTimeout(() => { try { probe.close(); } catch {} }, 800);
@@ -1445,7 +1677,13 @@ function friendName(id) {
 
 function renderIncomingCalls() {
   if (pendingCalls.size > 0) startRinging();
-  else stopRinging();
+  else {
+    stopRinging();
+    if (flashingForCall) { // nothing left to answer
+      flashingForCall = false;
+      tauriInvoke('request_attention', { urgent: false }).catch(() => {});
+    }
+  }
   incomingCallsEl.innerHTML = '';
   for (const [id, call] of pendingCalls) {
     const name = friendName(id);
@@ -1478,6 +1716,64 @@ function renderIncomingCalls() {
   }
 }
 
+// --- who's allowed to ring us -----------------------------------------
+// Anyone who has our ID can place a call to it. With "Only friends can call me"
+// on (the default), calls from anyone who isn't an accepted friend are declined
+// without ringing — with one exception: someone joining a call we're already
+// in, through a friend of theirs who's in it with us. Joining works by the
+// newcomer calling everyone already in the call directly (see 'roster'), and
+// they needn't be friends with all of them; the member they joined through
+// vouches for them with a 'peer-joined' message to the rest of us.
+
+function getFriendsOnlyCalls() {
+  return localStorage.getItem('patycord.friendsOnlyCalls') !== 'off'; // on by default
+}
+
+function setFriendsOnlyCalls(enabled) {
+  localStorage.setItem('patycord.friendsOnlyCalls', enabled ? 'on' : 'off');
+}
+
+const introducedPeers = new Map(); // peerId -> when a call member said they're joining
+const INTRODUCTION_TTL_MS = 60000;
+
+function mayRing(id) {
+  if (!getFriendsOnlyCalls() || acceptedFriends().some((f) => f.id === id)) return true;
+  const introducedAt = introducedPeers.get(id);
+  return calls.size > 0 && !!introducedAt && Date.now() - introducedAt < INTRODUCTION_TTL_MS;
+}
+
+function admitIncomingCall(call) {
+  if (mayRing(call.peer)) { ringIncomingCall(call); return; }
+  if (calls.size === 0) { declineCall(call); return; }
+  // Mid-call, a stranger may be a friend-of-a-friend joining: the introduction
+  // for them goes out at the same moment they start dialing, and can land just
+  // after their call does. Give it a few seconds before deciding.
+  let hungUp = false;
+  call.on('close', () => { hungUp = true; });
+  setTimeout(() => {
+    if (hungUp) return;
+    if (mayRing(call.peer)) ringIncomingCall(call);
+    else declineCall(call);
+  }, 3000);
+}
+
+function declineCall(call) {
+  call.close();
+  log(t('log.callDeclinedStranger', { tag: tagFor(call.peer, remoteNames.get(call.peer)) }));
+}
+
+function ringIncomingCall(call) {
+  pendingCalls.set(call.peer, call);
+  renderIncomingCalls();
+  notifyDesktop(t('notify.incomingCall', { name: friendName(call.peer) }), t('notify.incomingCallBody'));
+  if (appInBackground()) {
+    flashingForCall = true;
+    tauriInvoke('request_attention', { urgent: true }).catch(() => {});
+  }
+  log(t('log.incomingCall', { name: friendName(call.peer) }));
+  call.on('close', () => { pendingCalls.delete(call.peer); renderIncomingCalls(); });
+}
+
 // --- friend requests -------------------------------------------------
 
 function handleFriendRequest(fromId, name) {
@@ -1494,6 +1790,7 @@ function handleFriendRequest(fromId, name) {
   if (pendingFriendRequests.has(fromId)) return; // already showing one from them
   pendingFriendRequests.set(fromId, name);
   renderFriendRequests(); // the banner itself is the notice — no need for a toast too
+  notifyDesktop(t('notify.friendRequest', { name: name || t('unknown') }), t('notify.friendRequestBody'));
 }
 
 function renderFriendRequests() {
@@ -1538,6 +1835,7 @@ function addScreenTile(peerId, call) {
   const tile = document.createElement('div');
   tile.className = 'screenTile';
   const video = document.createElement('video');
+  applySpeakerTo(video); // the sharer's system audio, if they included it
   video.autoplay = true;
   video.playsInline = true;
   // Not muted — if the sharer included system audio, we want to actually hear it.
@@ -1639,178 +1937,222 @@ function stopScreenShare() {
   log(t('log.stoppedSharing'));
 }
 
-// --- RNNoise (open-source ML noise suppression, runs locally, no account needed) ---
+// --- mic pipeline ---------------------------------------------------------
+// mic -> RNNoise AudioWorklet (see rnnoise-worklet.js) -> MediaStream that goes
+// out over WebRTC. The output stream exists for the whole session, so calls can
+// be handed it before the mic is even open; the mic itself is only plugged in
+// while we're in a call (startMic/stopMic), and the graph is suspended between
+// calls. Holding the mic the rest of the time would keep Windows' "using your
+// microphone" indicator on and the capture/echo-cancellation pipeline running
+// for nothing.
 
-const RNNOISE_FRAME_SIZE = 480; // required by RNNoise, at 48kHz
-let rnnoiseModule = null;
-let rnnoiseState = 0;
-let rnnoiseInPtr = 0;
-let rnnoiseOutPtr = 0;
-let rnnoiseEnabled = true;
+let rnnoiseEnabled = true; // the setting; whether it's actually running is rnnoiseReady
+let rnnoiseReady = false; // WASM loaded into the worklet
 let audioCtx = null;
-let scriptProcessorNode = null; // held onto so it isn't garbage-collected mid-call
+let micDest = null; // MediaStreamAudioDestinationNode whose stream is processedStream
+let micOut = null; // everything bound for micDest goes through here — see buildProcessedStream
+let noiseNode = null; // the AudioWorkletNode, once loaded (first call)
+let noiseNodeLoading = null;
+let micSourceNode = null;
+let micStarting = null;
 
-async function loadRNNoise() {
-  if (rnnoiseModule) return rnnoiseModule;
-  try {
-    rnnoiseModule = await createRNNWasmModule();
-    rnnoiseState = rnnoiseModule._rnnoise_create(0);
-    const bytes = RNNOISE_FRAME_SIZE * 4;
-    rnnoiseInPtr = rnnoiseModule._malloc(bytes);
-    rnnoiseOutPtr = rnnoiseModule._malloc(bytes);
-  } catch (err) {
-    log(t('log.rnnoiseFailed', { error: err.message }));
-    rnnoiseModule = null;
-  }
-  return rnnoiseModule;
-}
-
-// frameIn/frameOut: Float32Array(480), samples in [-1, 1] — RNNoise itself expects
-// roughly int16-scale values, hence the *32768 / /32768 around the actual call.
-function processFrameRNNoise(frameIn, frameOut) {
-  const m = rnnoiseModule;
-  for (let i = 0; i < RNNOISE_FRAME_SIZE; i++) m.HEAPF32[rnnoiseInPtr / 4 + i] = frameIn[i] * 32768;
-  m._rnnoise_process_frame(rnnoiseState, rnnoiseOutPtr, rnnoiseInPtr);
-  for (let i = 0; i < RNNOISE_FRAME_SIZE; i++) frameOut[i] = m.HEAPF32[rnnoiseOutPtr / 4 + i] / 32768;
-}
-
-// Fixed-capacity circular buffer of samples. The naive way to buffer a stream of
-// irregularly-sized chunks is "concat onto a growing array", which reallocates
-// and copies the whole thing on every single chunk — wasteful GC churn in an
-// audio callback that fires ten-plus times a second for as long as a call lasts.
-// This allocates once and never again.
-class RingBuffer {
-  constructor(capacity) {
-    this.buf = new Float32Array(capacity);
-    this.capacity = capacity;
-    this.readIdx = 0;
-    this.length = 0; // samples currently buffered
-  }
-  clear() {
-    this.readIdx = 0;
-    this.length = 0;
-  }
-  write(chunk) {
-    for (let i = 0; i < chunk.length; i++) {
-      this.buf[(this.readIdx + this.length) % this.capacity] = chunk[i];
-      this.length++;
-    }
-  }
-  // Fills `dest` (its full length) with the oldest buffered samples and removes
-  // them. Caller checks .length beforehand — this doesn't guard against underrun.
-  read(dest) {
-    for (let i = 0; i < dest.length; i++) {
-      dest[i] = this.buf[this.readIdx];
-      this.readIdx = (this.readIdx + 1) % this.capacity;
-    }
-    this.length -= dest.length;
-  }
-}
-
-// Builds the Web Audio graph the mic runs through on its way out — RNNoise when
-// enabled, a straight passthrough otherwise — and returns the MediaStream it
-// produces, which is what actually goes out over WebRTC. Built once and kept for
-// the whole session, so calls can be handed this stream before the mic itself is
-// even open; startMic/stopMic plug the mic in and out of it and pause the graph
-// between calls. Uses ScriptProcessorNode (deprecated but universally supported,
-// and simpler than an AudioWorklet for this scale) with internal ring buffers,
-// since RNNoise needs exactly 480-sample frames regardless of the browser's own
-// audio callback chunk size.
 function buildProcessedStream() {
-  audioCtx = new AudioContext({ sampleRate: 48000 });
-  const processor = audioCtx.createScriptProcessor(4096, 1, 1);
-
-  // 3x the callback size is comfortable headroom over the worst-case backlog
-  // (well under 2x in practice) with input/output running at the same rate —
-  // this is never expected to fill up, let alone overflow.
-  const RING_CAPACITY = 4096 * 3;
-  const inputRing = new RingBuffer(RING_CAPACITY);
-  const outputRing = new RingBuffer(RING_CAPACITY);
-  const frameIn = new Float32Array(RNNOISE_FRAME_SIZE);
-  const frameOut = new Float32Array(RNNOISE_FRAME_SIZE);
-
-  processor.onaudioprocess = (e) => {
-    const input = e.inputBuffer.getChannelData(0);
-    const output = e.outputBuffer.getChannelData(0);
-
-    if (audioBuffersStale) {
-      // Leftovers from the previous call — don't open the next one with them.
-      inputRing.clear();
-      outputRing.clear();
-      audioBuffersStale = false;
-    }
-    if (muted) {
-      // The muted track only delivers silence — nothing worth denoising.
-      output.fill(0);
-      return;
-    }
-    if (!rnnoiseEnabled || !rnnoiseModule) {
-      output.set(input);
-      return;
-    }
-
-    inputRing.write(input);
-    while (inputRing.length >= RNNOISE_FRAME_SIZE) {
-      inputRing.read(frameIn);
-      processFrameRNNoise(frameIn, frameOut);
-      outputRing.write(frameOut);
-    }
-
-    if (outputRing.length >= output.length) {
-      outputRing.read(output);
-    } else {
-      // Brief startup underrun — take what's there and leave the rest silent
-      // rather than noise. Reading straight into a view over the front of
-      // `output` avoids a separate temporary buffer.
-      const available = outputRing.length;
-      outputRing.read(output.subarray(0, available));
-      output.fill(0, available);
-    }
-  };
-
-  scriptProcessorNode = processor;
-  const dest = audioCtx.createMediaStreamDestination();
-  processor.connect(dest);
+  audioCtx = new AudioContext({ sampleRate: 48000 }); // RNNoise works on 48 kHz frames
+  micDest = audioCtx.createMediaStreamDestination();
+  // Tapped by the speaking indicator, so ours lights up for what others actually
+  // hear: after noise suppression, and never while muted.
+  micOut = audioCtx.createGain();
+  micOut.connect(micDest);
+  speakingAnalysers.set(SELF, makeAnalyser(micOut));
   audioCtx.suspend().catch(() => {}); // idle until a call starts — see startMic
-  return dest.stream;
+  return micDest.stream;
+}
+
+// Loads the worklet (once) and, if suppression is on, RNNoise into it — on the
+// first call rather than at startup, since the WASM module reserves 16 MB. If
+// the worklet can't load at all, the mic is wired straight to the output
+// instead and the browser's built-in suppression covers for it (micConstraints).
+function ensureNoiseNode() {
+  if (noiseNode) return ensureRnnoise();
+  if (!noiseNodeLoading) {
+    noiseNodeLoading = (async () => {
+      try {
+        await audioCtx.audioWorklet.addModule('rnnoise-worklet.js');
+        noiseNode = new AudioWorkletNode(audioCtx, 'rnnoise', {
+          numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+          channelCount: 1, channelCountMode: 'explicit',
+        });
+        noiseNode.connect(micOut);
+        noiseNode.port.postMessage({ type: 'muted', value: !isTransmitting() });
+        noiseNode.port.postMessage({ type: 'enabled', value: rnnoiseEnabled });
+        await ensureRnnoise();
+      } catch (err) {
+        log(t('log.rnnoiseFailed', { error: err.message || err }));
+      }
+    })();
+  }
+  return noiseNodeLoading;
+}
+
+let rnnoiseLoading = null;
+function ensureRnnoise() {
+  if (!noiseNode || !rnnoiseEnabled || rnnoiseReady) return Promise.resolve();
+  if (!rnnoiseLoading) {
+    rnnoiseLoading = (async () => {
+      try {
+        const bytes = await (await fetch('rnnoise.wasm')).arrayBuffer();
+        const reply = new Promise((resolve) => {
+          noiseNode.port.onmessage = (e) => resolve(e.data);
+        });
+        noiseNode.port.postMessage({ type: 'wasm', bytes }, [bytes]);
+        const result = await reply;
+        if (result.type !== 'ready') throw new Error(result.error);
+        rnnoiseReady = true;
+        log(t('log.rnnoiseActive'));
+      } catch (err) {
+        log(t('log.rnnoiseFailed', { error: err.message || err }));
+      } finally {
+        rnnoiseLoading = null;
+      }
+    })();
+  }
+  return rnnoiseLoading;
 }
 
 function micConstraints() {
   // With RNNoise doing the denoising, the browser's own suppression on top would
   // just double-process the same audio through two different denoisers.
-  const builtInSuppression = rnnoiseModule ? false : getNoiseSuppressionEnabled();
+  const builtInSuppression = rnnoiseReady ? false : getNoiseSuppressionEnabled();
+  const device = getMicDevice();
   return {
-    audio: { noiseSuppression: builtInSuppression, voiceIsolation: builtInSuppression, echoCancellation: true, autoGainControl: true },
+    audio: {
+      noiseSuppression: builtInSuppression, voiceIsolation: builtInSuppression, echoCancellation: true, autoGainControl: true,
+      // "ideal", not "exact": an unplugged headset falls back to the default mic instead of failing the call.
+      ...(device && { deviceId: { ideal: device } }),
+    },
     video: false,
   };
 }
 
-// The mic is only actually open while we're in a call: holding it the rest of the
-// time keeps Windows' "using your microphone" indicator on and the capture and
-// echo-cancellation pipeline running for nothing. Opened (and RNNoise loaded, the
-// first time — its WASM module reserves 16 MB up front) when a call starts, and
-// released again when the last one ends; see renderCallPanel.
-let micSourceNode = null;
-let micStarting = null;
-let audioBuffersStale = false;
+// --- audio devices ---------------------------------------------------------
+// Which mic and speakers to use, by deviceId; empty means the Windows default.
+
+function getMicDevice() {
+  return localStorage.getItem('patycord.micDevice') || '';
+}
+
+function getSpeakerDevice() {
+  return localStorage.getItem('patycord.speakerDevice') || '';
+}
+
+function setMicDevice(id) {
+  localStorage.setItem('patycord.micDevice', id);
+  // Mid-call, swap over right away. What goes out over WebRTC is the pipeline's
+  // output stream, not the mic itself, so the call never notices the change.
+  if (localStream) {
+    localStream.getTracks().forEach((track) => track.stop());
+    localStream = null;
+    micSourceNode?.disconnect();
+    micSourceNode = null;
+    startMic();
+  }
+  if (micMeter) startMicMeter();
+}
+
+function setSpeakerDevice(id) {
+  localStorage.setItem('patycord.speakerDevice', id);
+  for (const entry of calls.values()) applySpeakerTo(entry.audioEl);
+  for (const { videoEl } of screenTiles.values()) applySpeakerTo(videoEl);
+  applySpeakerTo(uiSoundCtx);
+}
+
+// Works on <audio>/<video> elements and AudioContexts alike.
+function applySpeakerTo(target) {
+  if (target?.setSinkId) target.setSinkId(getSpeakerDevice()).catch(() => {});
+}
+
+async function populateDeviceSelects() {
+  let devices = [];
+  try { devices = await navigator.mediaDevices.enumerateDevices(); } catch {}
+  fillDeviceSelect(micSelectEl, devices.filter((d) => d.kind === 'audioinput'), getMicDevice());
+  fillDeviceSelect(speakerSelectEl, devices.filter((d) => d.kind === 'audiooutput'), getSpeakerDevice());
+}
+
+function fillDeviceSelect(select, devices, selected) {
+  select.innerHTML = '';
+  const add = (value, label) => {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    select.appendChild(opt);
+  };
+  add('', t('settings.systemDefault'));
+  // Chromium also lists the Windows default/communications devices as aliases of
+  // real ones — our own "System default" entry above covers those.
+  const real = devices.filter((d) => d.deviceId !== 'default' && d.deviceId !== 'communications');
+  real.forEach((d, i) => add(d.deviceId, d.label || t('settings.deviceN', { n: i + 1 })));
+  select.value = real.some((d) => d.deviceId === selected) ? selected : '';
+}
+
+// Live input level for the chosen mic while Settings → Audio is open, from a
+// short-lived capture of its own — so it works outside calls too, and stops
+// (releasing the mic) as soon as you leave that tab.
+let micMeter = null;
+
+async function startMicMeter() {
+  stopMicMeter();
+  const meter = {};
+  micMeter = meter;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia(micConstraints());
+    if (micMeter !== meter) { stream.getTracks().forEach((track) => track.stop()); return; } // closed meanwhile
+    meter.stream = stream;
+    meter.ctx = new AudioContext();
+    const analyser = meter.ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    meter.ctx.createMediaStreamSource(stream).connect(analyser);
+    const samples = new Float32Array(analyser.fftSize);
+    const tick = () => {
+      analyser.getFloatTimeDomainData(samples);
+      let sum = 0;
+      for (const s of samples) sum += s * s;
+      const db = 20 * Math.log10(Math.sqrt(sum / samples.length) || 1e-6);
+      micMeterFillEl.style.width = `${Math.max(0, Math.min(1, (db + 60) / 60)) * 100}%`; // -60 dB .. 0 dB
+      meter.raf = requestAnimationFrame(tick);
+    };
+    tick();
+  } catch {
+    if (micMeter === meter) micMeter = null;
+  }
+}
+
+function stopMicMeter() {
+  if (!micMeter) return;
+  cancelAnimationFrame(micMeter.raf);
+  micMeter.stream?.getTracks().forEach((track) => track.stop());
+  micMeter.ctx?.close().catch(() => {});
+  micMeter = null;
+  micMeterFillEl.style.width = '0%';
+}
+
+navigator.mediaDevices?.addEventListener('devicechange', () => {
+  if (!settingsModal.hidden) populateDeviceSelects();
+});
 
 function startMic() {
   if (localStream || micStarting) return;
   micStarting = (async () => {
     try {
-      if (rnnoiseEnabled && !rnnoiseModule) {
-        await loadRNNoise();
-        if (rnnoiseModule) log(t('log.rnnoiseActive'));
-      }
+      await ensureNoiseNode();
       const stream = await navigator.mediaDevices.getUserMedia(micConstraints());
       if (calls.size === 0) { // the call already ended while we were waiting on the mic
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
-      stream.getAudioTracks().forEach((track) => (track.enabled = !muted));
       localStream = stream;
+      applyTransmitState();
       micSourceNode = audioCtx.createMediaStreamSource(stream);
-      micSourceNode.connect(scriptProcessorNode);
+      micSourceNode.connect(noiseNode || micOut);
       await audioCtx.resume();
     } catch (err) {
       toast(t('toast.micFailed', { error: err.message }));
@@ -1825,8 +2167,115 @@ function stopMic() {
   localStream = null;
   micSourceNode?.disconnect();
   micSourceNode = null;
-  audioBuffersStale = true;
+  noiseNode?.port.postMessage({ type: 'reset' }); // don't open the next call with the tail end of this one
   audioCtx?.suspend().catch(() => {});
+}
+
+// Whether our mic should actually be going out right now.
+function isTransmitting() {
+  return !muted && (!pushToTalkActive() || pttHeld);
+}
+
+// --- push to talk ------------------------------------------------------
+// With it on, the mic only goes out while the chosen key or mouse button is
+// held. lib.rs watches the key system-wide (so it works with a game focused)
+// and only while we tell it to: during a call, with push-to-talk on.
+
+let pttHeld = false;
+let pttCapturing = false;
+
+function getPttEnabled() {
+  return localStorage.getItem('patycord.pttEnabled') === 'on';
+}
+
+function getPttKey() {
+  try { return JSON.parse(localStorage.getItem('patycord.pttKey')); } catch { return null; } // { vk, label }
+}
+
+function pushToTalkActive() {
+  return getPttEnabled() && !!getPttKey();
+}
+
+function syncPushToTalk() {
+  const watching = pushToTalkActive() && calls.size > 0;
+  window.__TAURI__?.core?.invoke('set_push_to_talk_key', { vk: watching ? getPttKey().vk : 0 }).catch(() => {});
+  if (!watching) pttHeld = false;
+  applyTransmitState();
+}
+
+function setPttHeld(held) {
+  if (held === pttHeld) return;
+  pttHeld = held;
+  applyTransmitState();
+}
+
+function renderPttSettings() {
+  pttToggle.checked = getPttEnabled();
+  pttKeyRow.hidden = !getPttEnabled();
+  pttKeyBtn.textContent = pttCapturing ? t('settings.pttPressKey') : getPttKey()?.label || t('settings.pttNoKey');
+}
+
+// Windows virtual-key codes for the mouse buttons worth binding (not left/right).
+const MOUSE_BUTTON_VK = { 1: [0x04, 'Mouse 3'], 3: [0x05, 'Mouse 4'], 4: [0x06, 'Mouse 5'] };
+
+function keyLabel(e) {
+  if (/^Key[A-Z]$/.test(e.code)) return e.code.slice(3);
+  if (/^Digitd$/.test(e.code)) return e.code.slice(5);
+  if (/^Numpad/.test(e.code)) return 'Num ' + e.code.slice(6);
+  return e.key.length === 1 ? e.key.toUpperCase() : e.code || e.key;
+}
+
+function finishPttCapture(key) {
+  pttCapturing = false;
+  if (key) localStorage.setItem('patycord.pttKey', JSON.stringify(key));
+  renderPttSettings();
+  syncPushToTalk();
+}
+
+// Capture phase, so Esc cancels the capture rather than also closing Settings.
+window.addEventListener('keydown', (e) => {
+  if (!pttCapturing) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  // keyCode is deprecated, but on Windows it's exactly the virtual-key code
+  // GetAsyncKeyState wants, layout-independent.
+  finishPttCapture(e.key === 'Escape' ? null : { vk: e.keyCode, label: keyLabel(e) });
+}, true);
+window.addEventListener('mousedown', (e) => {
+  if (!pttCapturing || !MOUSE_BUTTON_VK[e.button]) return;
+  e.preventDefault();
+  const [vk, label] = MOUSE_BUTTON_VK[e.button];
+  finishPttCapture({ vk, label });
+}, true);
+
+pttToggle.addEventListener('change', () => {
+  localStorage.setItem('patycord.pttEnabled', pttToggle.checked ? 'on' : 'off');
+  pttCapturing = pttToggle.checked && !getPttKey(); // turning it on with no key yet: ask for one straight away
+  renderPttSettings();
+  syncPushToTalk();
+  renderCallPanel();
+});
+pttKeyBtn.addEventListener('click', () => {
+  pttCapturing = true;
+  renderPttSettings();
+});
+
+window.__TAURI__?.event?.listen('ptt-changed', (event) => setPttHeld(event.payload === true));
+
+// Outside the Tauri app (browser testing) there's no system-wide watcher, so
+// fall back to the key while this page has focus.
+if (!window.__TAURI__) {
+  const matches = (vk) => pushToTalkActive() && calls.size > 0 && vk === getPttKey().vk;
+  window.addEventListener('keydown', (e) => { if (!pttCapturing && matches(e.keyCode)) setPttHeld(true); });
+  window.addEventListener('keyup', (e) => { if (matches(e.keyCode)) setPttHeld(false); });
+}
+
+// Pushes isTransmitting() to both the mic track and the worklet (which then
+// skips denoising silence entirely).
+function applyTransmitState() {
+  const on = isTransmitting();
+  localStream?.getAudioTracks().forEach((track) => (track.enabled = on));
+  noiseNode?.port.postMessage({ type: 'muted', value: !on });
 }
 
 // Run once at launch, only to find out whether there's a usable mic at all — so a
@@ -1868,7 +2317,16 @@ async function main() {
   if (!(await requestMic())) return;
 
   // A stable ID (saved locally) means friends you've added stay valid across restarts.
-  peer = new Peer(getMyPersistentId()); // uses PeerJS's free public cloud broker for signaling only
+  // Closing cleanly tells everyone we're connected to straight away (their side
+  // of each connection closes immediately), rather than leaving them to notice
+  // when ICE times out. Quitting from the tray tears the page down the same way.
+  window.addEventListener('pagehide', () => peer?.destroy());
+
+  // Uses PeerJS's free public cloud broker for signaling only. The automated
+  // browser tests (tests/) inject options pointing at a local one instead —
+  // never set inside the app itself.
+  const testPeerOptions = window.__TAURI__ ? undefined : window.__patycordTestPeerOptions;
+  peer = new Peer(getMyPersistentId(), testPeerOptions);
 
   peer.on('open', (id) => {
     myIdEl.innerHTML = tagHtml(id, getMyUsername());
@@ -1885,10 +2343,7 @@ async function main() {
       handleIncomingScreenShare(call);
       return;
     }
-    pendingCalls.set(call.peer, call);
-    renderIncomingCalls();
-    log(t('log.incomingCall', { name: friendName(call.peer) }));
-    call.on('close', () => { pendingCalls.delete(call.peer); renderIncomingCalls(); });
+    admitIncomingCall(call);
   });
 
   peer.on('connection', (conn) => handleIncomingDataConnection(conn));
@@ -1959,22 +2414,51 @@ myIdEl.addEventListener('click', () => copyMyId(copyBtn, () => t('settings.copy'
 settingsBtn.addEventListener('click', () => {
   settingsNameInput.value = getMyUsername();
   noiseSuppressionToggle.checked = getNoiseSuppressionEnabled();
+  pttCapturing = false;
+  renderPttSettings();
+  closeToTrayToggle.checked = getCloseToTray();
+  notificationsToggle.checked = getDesktopNotifications();
+  // The registry entry is the source of truth — it can also be removed from Task Manager's Startup tab.
+  tauriInvoke('plugin:autostart|is_enabled').then((on) => { startWithWindowsToggle.checked = !!on; }).catch(() => {});
   shareActivityToggle.checked = getShareActivityEnabled();
-  for (const b of settingsTabBtns) b.classList.toggle('active', b.dataset.tab === 'account');
-  for (const pane of settingsPanes) pane.hidden = pane.dataset.pane !== 'account';
+  friendsOnlyCallsToggle.checked = getFriendsOnlyCalls();
   settingsModal.hidden = false;
+  showSettingsPane('account');
   appVersionEl.textContent = '';
   window.__TAURI__?.app.getVersion().then((v) => { appVersionEl.textContent = `patycord v${v}`; });
 });
-closeSettingsBtn.addEventListener('click', () => { settingsModal.hidden = true; });
+closeSettingsBtn.addEventListener('click', closeSettings);
 
 const settingsTabBtns = document.querySelectorAll('.settingsTabBtn');
 const settingsPanes = document.querySelectorAll('.settingsPane');
 for (const btn of settingsTabBtns) {
-  btn.addEventListener('click', () => {
-    for (const b of settingsTabBtns) b.classList.toggle('active', b === btn);
-    for (const pane of settingsPanes) pane.hidden = pane.dataset.pane !== btn.dataset.tab;
-  });
+  btn.addEventListener('click', () => showSettingsPane(btn.dataset.tab));
+}
+
+function showSettingsPane(name) {
+  for (const b of settingsTabBtns) b.classList.toggle('active', b.dataset.tab === name);
+  for (const pane of settingsPanes) pane.hidden = pane.dataset.pane !== name;
+  if (name === 'audio') {
+    populateDeviceSelects();
+    startMicMeter();
+  } else {
+    stopMicMeter();
+  }
+}
+
+function closeSettings() {
+  settingsModal.hidden = true;
+  stopMicMeter();
+}
+
+micSelectEl.addEventListener('change', () => setMicDevice(micSelectEl.value));
+speakerSelectEl.addEventListener('change', () => setSpeakerDevice(speakerSelectEl.value));
+speakerTestBtn.addEventListener('click', playRing);
+// No output-device switching in this webview: hide the picker rather than show one that does nothing.
+if (!('setSinkId' in HTMLMediaElement.prototype)) {
+  const row = speakerSelectEl.closest('.row');
+  row.hidden = true;
+  row.previousElementSibling.hidden = true; // its label
 }
 noiseSuppressionToggle.addEventListener('change', () => {
   setNoiseSuppressionEnabled(noiseSuppressionToggle.checked);
@@ -1982,11 +2466,29 @@ noiseSuppressionToggle.addEventListener('change', () => {
 shareActivityToggle.addEventListener('change', () => {
   setShareActivityEnabled(shareActivityToggle.checked);
 });
+friendsOnlyCallsToggle.addEventListener('change', () => {
+  setFriendsOnlyCalls(friendsOnlyCallsToggle.checked);
+});
+notificationsToggle.addEventListener('change', () => {
+  localStorage.setItem('patycord.notifications', notificationsToggle.checked ? 'on' : 'off');
+});
+closeToTrayToggle.addEventListener('change', () => {
+  localStorage.setItem('patycord.closeToTray', closeToTrayToggle.checked ? 'on' : 'off');
+  syncTraySettings();
+});
+startWithWindowsToggle.addEventListener('change', async () => {
+  try {
+    await tauriInvoke(startWithWindowsToggle.checked ? 'plugin:autostart|enable' : 'plugin:autostart|disable');
+  } catch (err) {
+    log(`start with Windows: ${err.message || err}`);
+  }
+  startWithWindowsToggle.checked = !!(await tauriInvoke('plugin:autostart|is_enabled').catch(() => false)); // show what actually stuck
+});
 settingsSaveNameBtn.addEventListener('click', () => {
   const name = settingsNameInput.value.trim();
   if (!name) return;
   setMyUsername(name);
-  settingsModal.hidden = true;
+  closeSettings();
 });
 settingsNameInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') settingsSaveNameBtn.click();
@@ -2028,6 +2530,7 @@ function applyLanguage() {
   if (openChatPeerId === null && calls.size > 0) chatMessagesEl.dataset.empty = t('chat.emptyCall');
   else chatMessagesEl.dataset.empty = t('chat.emptyDm');
   emptyStateVariant = null; // force renderEmptyState (via renderPeerList below) to rebuild in the new language
+  syncTraySettings(); // relabels the tray menu
   renderMyActivity();
   renderPeerList();
   renderIncomingCalls();
@@ -2042,7 +2545,7 @@ chatCloseBtn.addEventListener('click', closeChat);
 
 muteBtn.addEventListener('click', () => {
   muted = !muted;
-  localStream?.getAudioTracks().forEach((track) => (track.enabled = !muted)); // startMic applies it too, if the mic isn't open yet
+  applyTransmitState(); // startMic applies it too, if the mic isn't open yet
   muteBtn.title = muted ? t('main.unmute') : t('main.mute');
   muteBtn.classList.toggle('active', muted);
   muteBtn.innerHTML = muted ? ICONS.micOff : ICONS.mic;
@@ -2098,13 +2601,12 @@ closeReleaseNotesBtn.addEventListener('click', closeReleaseNotes);
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (!releaseNotesModalEl.hidden) closeReleaseNotes();
-  else if (!settingsModal.hidden) settingsModal.hidden = true;
+  else if (!settingsModal.hidden) closeSettings();
   closeVolumePopover();
   closeScreenSharePopover();
 });
-for (const modal of [settingsModal, releaseNotesModalEl]) {
-  modal.addEventListener('click', (e) => { if (e.target === modal) modal.hidden = true; });
-}
+settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal) closeSettings(); });
+releaseNotesModalEl.addEventListener('click', (e) => { if (e.target === releaseNotesModalEl) closeReleaseNotes(); });
 
 // --- auto-update -------------------------------------------------------
 // Checks GitHub Releases (via the endpoint in tauri.conf.json) for a newer
@@ -2183,6 +2685,8 @@ async function init() {
   await initSecureStore();
   chatHistories = loadChatHistories();
   pendingMessages = loadPendingMessages();
+  unreadCounts = loadUnreadCounts();
+  renderUnreadTitle();
   if (getMyUsername()) setMyUsername(getMyUsername());
   saveFriends(loadFriends()); // persist the cleanup of any bad entries from past bugs
   renderPeerList();
@@ -2193,6 +2697,7 @@ async function init() {
   // the real Tauri app, never in a plain browser. We just relay whatever it says to
   // friends; see lib.rs for the actual detection against src-tauri/game-names.json.
   syncActivityDetection(); // the Rust side starts with detection off until told otherwise
+  syncTraySettings();
   window.__TAURI__?.event?.listen('active-app-changed', (event) => {
     myActivity = typeof event.payload === 'string' ? event.payload : null;
     renderMyActivity();

@@ -162,6 +162,59 @@ fn detect_running_game() -> Option<String> {
     games.get(&exe).cloned()
 }
 
+// Push-to-talk: watches one key (or mouse button) system-wide and emits
+// "ptt-changed" with whether it's held. Reads the key's state with
+// GetAsyncKeyState rather than registering a global hotkey — RegisterHotKey would
+// swallow the key, so a push-to-talk key bound to something a game also uses
+// would stop working in the game. Only polls while the frontend has set a key,
+// which it does only during a call with push-to-talk on; otherwise the thread is
+// parked and costs nothing.
+#[cfg(target_os = "windows")]
+mod push_to_talk {
+    use std::sync::atomic::{AtomicU16, Ordering};
+    use std::sync::OnceLock;
+    use tauri::Emitter;
+
+    static KEY: AtomicU16 = AtomicU16::new(0); // Windows virtual-key code; 0 = off
+    static THREAD: OnceLock<std::thread::Thread> = OnceLock::new();
+
+    pub fn start(app: tauri::AppHandle) {
+        let handle = std::thread::spawn(move || {
+            use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+            let mut held = false;
+            loop {
+                let vk = KEY.load(Ordering::Relaxed);
+                let now_held = vk != 0 && unsafe { GetAsyncKeyState(vk as i32) } < 0; // high bit = currently down
+                if now_held != held {
+                    held = now_held;
+                    let _ = app.emit("ptt-changed", held);
+                }
+                if vk == 0 {
+                    std::thread::park(); // until set_push_to_talk_key wakes us
+                } else {
+                    std::thread::sleep(std::time::Duration::from_millis(15));
+                }
+            }
+        });
+        let _ = THREAD.set(handle.thread().clone());
+    }
+
+    pub fn set_key(vk: u16) {
+        KEY.store(vk, Ordering::Relaxed);
+        if let Some(thread) = THREAD.get() {
+            thread.unpark();
+        }
+    }
+}
+
+#[tauri::command]
+fn set_push_to_talk_key(vk: u16) {
+    #[cfg(target_os = "windows")]
+    push_to_talk::set_key(vk);
+    #[cfg(not(target_os = "windows"))]
+    let _ = vk;
+}
+
 // A single encrypted-at-rest blob (one JSON object holding friends, chat history,
 // pending messages, persistent ID — everything the frontend used to keep in plain
 // localStorage) instead of per-key values, so there's one load and one save call
@@ -416,22 +469,154 @@ mod secure_store {
     }
 }
 
+// --- tray --------------------------------------------------------------
+// Everything in patycord is peer-to-peer, so you're only reachable while it's
+// running: closing the window hides it to the tray instead of quitting (unless
+// turned off in settings), and Quit lives in the tray icon's menu.
+
+static CLOSE_TO_TRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+// Passed by the start-with-Windows entry, so a launch at sign-in goes straight to the tray.
+const STARTED_HIDDEN_ARG: &str = "--hidden";
+
+#[tauri::command]
+fn set_close_to_tray(enabled: bool) {
+    CLOSE_TO_TRAY.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn show_main_window(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+// The menu's items, kept so the frontend can relabel them in the current language.
+struct TrayMenu {
+    open: tauri::menu::MenuItem<tauri::Wry>,
+    quit: tauri::menu::MenuItem<tauri::Wry>,
+}
+
+fn create_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    use tauri::Manager;
+
+    let open = MenuItem::with_id(app, "open", "Open patycord", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit patycord", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &quit])?;
+    let mut tray = TrayIconBuilder::with_id("main")
+        .tooltip("patycord")
+        .menu(&menu)
+        .show_menu_on_left_click(false) // left click opens the window; the menu is on right click
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => show_main_window(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    app.manage(TrayMenu { open, quit });
+    Ok(())
+}
+
+#[tauri::command]
+fn set_tray_labels(menu: tauri::State<'_, TrayMenu>, open: String, quit: String) {
+    let _ = menu.open.set_text(open);
+    let _ = menu.quit.set_text(quit);
+}
+
+// --- getting your attention -----------------------------------------------
+
+// A Windows notification. The frontend only sends these while the window isn't
+// focused — in-app toasts cover the rest.
+#[tauri::command]
+fn notify(app: tauri::AppHandle, title: String, body: String) {
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app.notification().builder().title(title).body(body).show();
+}
+
+// Flashes the taskbar button until the window is focused (or stops flashing).
+// Hidden in the tray there's no taskbar button to flash, so for an incoming call
+// the window is first put back minimized — without activating it, so a
+// fullscreen game doesn't lose focus.
+#[tauri::command]
+fn request_attention(app: tauri::AppHandle, urgent: bool) {
+    use tauri::Manager;
+    let Some(window) = app.get_webview_window("main") else { return };
+    if !urgent {
+        let _ = window.request_user_attention(None);
+        return;
+    }
+    #[cfg(target_os = "windows")]
+    if !window.is_visible().unwrap_or(true) {
+        use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWMINNOACTIVE};
+        if let Ok(hwnd) = window.hwnd() {
+            unsafe {
+                let _ = ShowWindow(windows::Win32::Foundation::HWND(hwnd.0 as _), SW_SHOWMINNOACTIVE);
+            }
+        }
+    }
+    let _ = window.request_user_attention(Some(tauri::UserAttentionType::Critical));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Must be registered first. A second launch (from the Start menu, say, while
+        // we're sitting in the tray) would otherwise start another copy under the
+        // same peer ID, which the signaling server rejects — instead it just brings
+        // this one back.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main_window(app)))
+        .plugin(tauri_plugin_autostart::Builder::new().arg(STARTED_HIDDEN_ARG).build())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             secure_store::load_secure_store,
             secure_store::save_secure_store,
-            set_activity_detection
+            set_activity_detection,
+            set_push_to_talk_key,
+            set_close_to_tray,
+            set_tray_labels,
+            notify,
+            request_attention
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if CLOSE_TO_TRAY.load(std::sync::atomic::Ordering::Relaxed) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(|_app| {
+            create_tray(_app)?;
+            {
+                use tauri::Manager;
+                // The window starts hidden (tauri.conf.json) so a launch at sign-in
+                // never flashes it up before going to the tray.
+                if !std::env::args().any(|arg| arg == STARTED_HIDDEN_ARG) {
+                    if let Some(window) = _app.get_webview_window("main") {
+                        let _ = window.show();
+                    }
+                }
+            }
             #[cfg(target_os = "windows")]
             {
                 use tauri::{Emitter, Manager};
                 let window = _app.get_webview_window("main").expect("no main window");
                 allow_mic_permission(&window);
+                push_to_talk::start(_app.handle().clone());
 
                 let app_handle = _app.handle().clone();
                 std::thread::spawn(move || {

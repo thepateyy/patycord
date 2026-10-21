@@ -61,6 +61,9 @@
   label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); display: block; margin-bottom: 6px; font-weight: 600; }
   .row { display: flex; gap: 8px; align-items: center; }
   .row input { flex: 1; min-width: 0; }
+  .row[hidden], label[hidden] { display: none; }
+  .settingsPane button.secondary { background: var(--bg); border: 1px solid var(--border); }
+  .settingsPane button.secondary:hover { border-color: var(--accent); }
   /* What's on screen is the pretty Name#1234 tag, not the real ID — so it's
      click-to-copy rather than text-selectable, which would copy the wrong thing. */
   #myId {
@@ -175,6 +178,15 @@
   .chatToggleBtn svg { width: 14px; height: 14px; }
   .chatToggleBtn:hover { background: var(--accent-hover); }
   .chatToggleBtn.active { background: var(--accent-hover); box-shadow: 0 0 0 2px var(--accent); }
+  .chatToggleBtn.offline { background: var(--bg-elev-2); color: var(--text-muted); } /* still works — messages wait for them */
+  .chatToggleBtn.offline:hover { color: var(--text); }
+  .chatToggleBtn { position: relative; }
+  .unreadBadge {
+    position: absolute; top: -5px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px;
+    background: var(--danger); color: #fff; font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
+    box-shadow: 0 0 0 2px var(--bg);
+  }
+  li.friendRow.unread .name { color: #fff; font-weight: 800; }
   .empty { color: #6b6c72; font-size: 12.5px; padding: 6px 0; }
 
   #incomingCalls, #friendRequests { display: flex; flex-direction: column; gap: 8px; }
@@ -267,6 +279,9 @@
   .settingsPanes { flex: 1; min-width: 0; padding: 16px; }
   .settingsPane[hidden] { display: none; }
   .settingsNav .appVersion { margin-top: auto; padding: 0 2px; text-align: left; }
+  .micMeter { height: 6px; border-radius: 999px; background: var(--bg); border: 1px solid var(--border); margin-top: 8px; overflow: hidden; }
+  .micMeterFill { height: 100%; width: 0%; background: var(--success); transition: width 0.06s linear; }
+  .row select { flex: 1; min-width: 0; }
 
   #releaseNotesModal .card { width: min(420px, 90%); margin: 0; max-height: 70vh; display: flex; flex-direction: column; }
   .releaseNotesBody {
@@ -337,6 +352,8 @@
   .participant .avatarWrap { position: relative; }
   .participant .avatar { width: 54px; height: 54px; font-size: 17px; }
   .participant.dialing .avatar { opacity: 0.45; }
+  .participant .avatar { transition: box-shadow 0.12s ease; }
+  .participant.speaking .avatar { box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--success); }
   .participant .mutedBadge {
     position: absolute; right: -2px; bottom: -2px; width: 22px; height: 22px; border-radius: 50%;
     background: var(--danger); color: #fff; display: flex; align-items: center; justify-content: center;
@@ -418,6 +435,8 @@
   .chatMsg .who { font-weight: 700; }
   .chatMsg .time { color: var(--text-muted); font-size: 10px; margin-left: 6px; }
   .chatMsg .text { display: block; overflow-wrap: anywhere; }
+  .chatMsg.pending { opacity: 0.5; } /* ours, not yet confirmed delivered — see markDelivered */
+  .chatMsg.pending .time::after { content: " · …"; }
   .chatInputRow { display: flex; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--border); }
   .chatInputRow input { flex: 1; }
 </style>
@@ -447,6 +466,7 @@
           <button class="settingsTabBtn active" data-tab="account" data-i18n="settings.tabAccount">Account</button>
           <button class="settingsTabBtn" data-tab="audio" data-i18n="settings.audio">Audio</button>
           <button class="settingsTabBtn" data-tab="privacy" data-i18n="settings.privacy">Privacy</button>
+          <button class="settingsTabBtn" data-tab="app" data-i18n="settings.tabApp">App</button>
           <button class="settingsTabBtn" data-tab="language" data-i18n="settings.language">Language</button>
           <div id="appVersion" class="appVersion"></div>
         </div>
@@ -462,7 +482,18 @@
           </div>
 
           <div class="settingsPane" data-pane="audio" hidden>
-            <div class="switchRow">
+            <label for="micSelect" data-i18n="settings.microphone">Microphone</label>
+            <select id="micSelect"></select>
+            <div class="micMeter"><div id="micMeterFill" class="micMeterFill"></div></div>
+            <p class="hint" data-i18n="settings.micMeterHint">Say something — the bar should move.</p>
+
+            <label for="speakerSelect" style="margin-top:14px;" data-i18n="settings.speakers">Speakers</label>
+            <div class="row">
+              <select id="speakerSelect"></select>
+              <button id="speakerTestBtn" class="secondary" data-i18n="settings.testSound">Test</button>
+            </div>
+
+            <div class="switchRow" style="margin-top:16px;">
               <span class="switchLabel">
                 <span data-i18n="settings.noiseSuppression">Noise suppression</span>
                 <small data-i18n="settings.noiseSuppressionDesc">Filters background noise from your mic</small>
@@ -471,6 +502,21 @@
                 <input type="checkbox" id="noiseSuppressionToggle">
                 <span class="switchTrack"><span class="switchKnob"></span></span>
               </label>
+            </div>
+
+            <div class="switchRow" style="margin-top:16px;">
+              <span class="switchLabel">
+                <span data-i18n="settings.pushToTalk">Push to talk</span>
+                <small data-i18n="settings.pushToTalkDesc">Your mic only goes out while you hold the key — works while you're in a game too</small>
+              </span>
+              <label class="switch">
+                <input type="checkbox" id="pttToggle">
+                <span class="switchTrack"><span class="switchKnob"></span></span>
+              </label>
+            </div>
+            <div class="row" id="pttKeyRow" style="margin-top:8px;" hidden>
+              <span class="hint" style="margin:0; flex:1;" data-i18n="settings.pttKey">Key</span>
+              <button id="pttKeyBtn" class="secondary"></button>
             </div>
           </div>
 
@@ -482,6 +528,49 @@
               </span>
               <label class="switch">
                 <input type="checkbox" id="shareActivityToggle">
+                <span class="switchTrack"><span class="switchKnob"></span></span>
+              </label>
+            </div>
+            <div class="switchRow" style="margin-top:16px;">
+              <span class="switchLabel">
+                <span data-i18n="settings.friendsOnlyCalls">Only friends can call me</span>
+                <small data-i18n="settings.friendsOnlyCallsDesc">Calls from anyone else are declined without ringing</small>
+              </span>
+              <label class="switch">
+                <input type="checkbox" id="friendsOnlyCallsToggle">
+                <span class="switchTrack"><span class="switchKnob"></span></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="settingsPane" data-pane="app" hidden>
+            <div class="switchRow">
+              <span class="switchLabel">
+                <span data-i18n="settings.notifications">Windows notifications</span>
+                <small data-i18n="settings.notificationsDesc">For calls, messages and friend requests while patycord isn't in front</small>
+              </span>
+              <label class="switch">
+                <input type="checkbox" id="notificationsToggle">
+                <span class="switchTrack"><span class="switchKnob"></span></span>
+              </label>
+            </div>
+            <div class="switchRow" style="margin-top:16px;">
+              <span class="switchLabel">
+                <span data-i18n="settings.closeToTray">Keep running in the tray when closed</span>
+                <small data-i18n="settings.closeToTrayDesc">So friends can still call and message you. Quit from the tray icon.</small>
+              </span>
+              <label class="switch">
+                <input type="checkbox" id="closeToTrayToggle">
+                <span class="switchTrack"><span class="switchKnob"></span></span>
+              </label>
+            </div>
+            <div class="switchRow" style="margin-top:16px;">
+              <span class="switchLabel">
+                <span data-i18n="settings.startWithWindows">Start with Windows</span>
+                <small data-i18n="settings.startWithWindowsDesc">Starts in the tray when you sign in, so you're reachable without opening it</small>
+              </span>
+              <label class="switch">
+                <input type="checkbox" id="startWithWindowsToggle">
                 <span class="switchTrack"><span class="switchKnob"></span></span>
               </label>
             </div>
