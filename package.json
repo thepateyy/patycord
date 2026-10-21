@@ -6,9 +6,12 @@
     "start": "tauri dev",
     "build": "tauri build",
     "serve": "node scripts/serve.js",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "playwright test"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.11.4"
+    "@playwright/test": "1.63.0",
+    "@tauri-apps/cli": "^2.11.4",
+    "peer": "1.0.2"
   }
 }

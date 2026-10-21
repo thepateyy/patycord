@@ -8,3 +8,7 @@ patycord-logo.png
 # generate` if lost; the private key + password live outside the repo.
 *.key
 *.key.pub
+
+# Playwright output
+test-results/
+playwright-report/

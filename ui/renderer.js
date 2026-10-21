@@ -1550,9 +1550,17 @@ function probePresence(id) {
   // a fresh probe anyway, and opening one is pure churn: a whole extra WebRTC
   // PeerConnection + DataChannel handshake, held open, then torn down again.
   const existing = dataConnections.get(id);
-  if (existing?.open) {
+  const iceState = existing?.peerConnection?.iceConnectionState;
+  if (existing?.open && iceState !== 'disconnected' && iceState !== 'failed') {
     markOnline(id);
     return;
+  }
+  // Still "open" but ICE has lost them: their app crashed or was killed without
+  // closing anything. PeerJS only closes the connection once ICE fully fails,
+  // ~30 s later — don't keep showing them online until then; drop it and probe.
+  if (existing?.open) {
+    existing.close();
+    dataConnections.delete(id);
   }
   if (activeProbes.has(id)) return; // previous one still in flight
   let settled = false;
@@ -2309,7 +2317,16 @@ async function main() {
   if (!(await requestMic())) return;
 
   // A stable ID (saved locally) means friends you've added stay valid across restarts.
-  peer = new Peer(getMyPersistentId()); // uses PeerJS's free public cloud broker for signaling only
+  // Closing cleanly tells everyone we're connected to straight away (their side
+  // of each connection closes immediately), rather than leaving them to notice
+  // when ICE times out. Quitting from the tray tears the page down the same way.
+  window.addEventListener('pagehide', () => peer?.destroy());
+
+  // Uses PeerJS's free public cloud broker for signaling only. The automated
+  // browser tests (tests/) inject options pointing at a local one instead —
+  // never set inside the app itself.
+  const testPeerOptions = window.__TAURI__ ? undefined : window.__patycordTestPeerOptions;
+  peer = new Peer(getMyPersistentId(), testPeerOptions);
 
   peer.on('open', (id) => {
     myIdEl.innerHTML = tagHtml(id, getMyUsername());
