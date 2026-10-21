@@ -418,6 +418,8 @@
   .chatMsg .who { font-weight: 700; }
   .chatMsg .time { color: var(--text-muted); font-size: 10px; margin-left: 6px; }
   .chatMsg .text { display: block; overflow-wrap: anywhere; }
+  .chatMsg.pending { opacity: 0.5; } /* ours, not yet confirmed delivered — see markDelivered */
+  .chatMsg.pending .time::after { content: " · …"; }
   .chatInputRow { display: flex; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--border); }
   .chatInputRow input { flex: 1; }
 </style>
@@ -482,6 +484,16 @@
               </span>
               <label class="switch">
                 <input type="checkbox" id="shareActivityToggle">
+                <span class="switchTrack"><span class="switchKnob"></span></span>
+              </label>
+            </div>
+            <div class="switchRow" style="margin-top:16px;">
+              <span class="switchLabel">
+                <span data-i18n="settings.friendsOnlyCalls">Only friends can call me</span>
+                <small data-i18n="settings.friendsOnlyCallsDesc">Calls from anyone else are declined without ringing</small>
+              </span>
+              <label class="switch">
+                <input type="checkbox" id="friendsOnlyCallsToggle">
                 <span class="switchTrack"><span class="switchKnob"></span></span>
               </label>
             </div>

@@ -12,6 +12,7 @@ const settingsNameInput = document.getElementById('settingsNameInput');
 const settingsSaveNameBtn = document.getElementById('settingsSaveNameBtn');
 const noiseSuppressionToggle = document.getElementById('noiseSuppressionToggle');
 const shareActivityToggle = document.getElementById('shareActivityToggle');
+const friendsOnlyCallsToggle = document.getElementById('friendsOnlyCallsToggle');
 const languageSelectEl = document.getElementById('languageSelect');
 const usernameModal = document.getElementById('usernameModal');
 const usernameInput = document.getElementById('usernameInput');
@@ -1051,8 +1052,9 @@ function ensureDataConnection(id) {
   if (dataConnections.has(id)) return dataConnections.get(id);
   const conn = peer.connect(id);
   conn.on('open', () => {
-    conn.send({ type: 'hello', name: getMyUsername(), activity: outgoingActivity() });
-    flushPendingMessages(id);
+    conn.send({ type: 'hello', name: getMyUsername(), activity: outgoingActivity(), acks: true });
+    // Queued DMs go out on *their* hello (see handleDataMessage), once we know
+    // whether they confirm delivery.
   });
   conn.on('data', (msg) => handleDataMessage(id, msg));
   conn.on('error', () => {}); // connectivity errors surface via the call itself
@@ -1118,7 +1120,7 @@ function handleIncomingDataConnection(conn) {
   const isProbe = conn.metadata?.probe === true;
   conn.on('open', () => {
     const isFriend = acceptedFriends().some((f) => f.id === conn.peer);
-    conn.send({ type: 'hello', name: getMyUsername(), activity: isFriend ? outgoingActivity() : null });
+    conn.send({ type: 'hello', name: getMyUsername(), activity: isFriend ? outgoingActivity() : null, acks: true });
     if (isFriend) {
       // They just reached out, so they're online — no need to wait for our own
       // (deliberately infrequent, for offline friends) sweep to notice.
@@ -1136,8 +1138,7 @@ function handleIncomingDataConnection(conn) {
         if (otherId !== conn.peer) otherConn.send({ type: 'peer-joined', id: conn.peer });
       }
     }
-    dataConnections.set(conn.peer, conn);
-    flushPendingMessages(conn.peer);
+    dataConnections.set(conn.peer, conn); // queued DMs follow on their hello
   });
   conn.on('data', (msg) => handleDataMessage(conn.peer, msg));
   conn.on('close', () => removeDataConnection(conn.peer, conn));
@@ -1151,6 +1152,8 @@ function handleDataMessage(fromId, msg) {
   if (msg.type === 'hello') {
     learnName(fromId, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
     setPeerActivity(fromId, msg.activity);
+    ackSupport.set(fromId, msg.acks === true);
+    flushPendingMessages(fromId);
   } else if (msg.type === 'activity') {
     setPeerActivity(fromId, msg.activity);
   } else if (msg.type === 'roster') {
@@ -1165,20 +1168,30 @@ function handleDataMessage(fromId, msg) {
       }
     }
   } else if (msg.type === 'peer-joined') {
-    if (typeof msg.id === 'string') log(t('log.joining', { name: friendName(msg.id) }));
+    if (typeof msg.id !== 'string') return;
+    log(t('log.joining', { name: friendName(msg.id) }));
+    // Only an introduction from someone we're actually in a call with counts —
+    // see admitIncomingCall.
+    if (calls.has(fromId)) introducedPeers.set(msg.id, Date.now());
   } else if (msg.type === 'chat') {
     const text = typeof msg.text === 'string' ? msg.text.slice(0, 2000) : '';
     if (msg.scope === 'dm') {
       if (!acceptedFriends().some((f) => f.id === fromId)) return; // only from accepted friends
-      addChatMessage(fromId, fromId, text);
-      if (fromId !== openChatPeerId) toast(t('toast.newMessage', { name: friendName(fromId) }), 'info');
+      const id = wireMessageId(msg.id);
+      const isNew = addChatMessage(fromId, fromId, text, { ts: wireTimestamp(msg.ts), id });
+      // Confirm even a duplicate — it means our earlier confirmation got lost.
+      if (id) dataConnections.get(fromId)?.send({ type: 'chat-ack', id });
+      if (isNew && fromId !== openChatPeerId) toast(t('toast.newMessage', { name: friendName(fromId) }), 'info');
     } else {
       // 'call' scope (or unmarked, from an older client) — only from someone actually in the call with us.
       if (!calls.has(fromId)) return;
-      addCallChatMessage(fromId, text);
+      addCallChatMessage(fromId, text, wireTimestamp(msg.ts));
       // Only worth a toast if call chat isn't the thing currently on screen — e.g. a DM is open instead.
       if (openChatPeerId !== null) toast(t('toast.newCallMessage', { name: friendName(fromId) }), 'info');
     }
+  } else if (msg.type === 'chat-ack') {
+    const id = wireMessageId(msg.id);
+    if (id) markDelivered(fromId, [id]);
   } else if (msg.type === 'friend-request') {
     handleFriendRequest(fromId, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
   } else if (msg.type === 'friend-accept') {
@@ -1208,32 +1221,66 @@ function handleDataMessage(fromId, msg) {
 // falls back to call chat if a call is still active, rather than just
 // hiding the panel.
 
-function renderChatMessage(fromId, text) {
+// Today's messages show just the time; anything older gets the date too.
+// Entries saved before timestamps existed have no `ts` and show no time
+// rather than a made-up one.
+function formatChatTime(ts) {
+  if (!ts) return '';
+  const date = new Date(ts);
+  const time = date.toLocaleTimeString(getLanguage(), { hour: '2-digit', minute: '2-digit' });
+  if (date.toDateString() === new Date().toDateString()) return time;
+  return `${date.toLocaleDateString(getLanguage(), { month: 'short', day: 'numeric' })} ${time}`;
+}
+
+// A timestamp off the wire — the sender's clock, so a queued message keeps the
+// time it was actually written rather than when it finally arrived. Clamped to
+// now so a skewed (or hostile) clock can't date a message in the future.
+function wireTimestamp(ts) {
+  const now = Date.now();
+  return Number.isFinite(ts) && ts > 1.6e12 ? Math.min(ts, now) : now;
+}
+
+function wireMessageId(id) {
+  return typeof id === 'string' && id.length <= 64 ? id : null;
+}
+
+// `pending` marks one of our own DMs that hasn't been confirmed delivered yet.
+function renderChatMessage({ fromId, text, ts, id }, { pending = false } = {}) {
   const displayName = fromId === peer.id ? t('chat.you') : friendName(fromId);
   const div = document.createElement('div');
-  div.className = 'chatMsg';
-  const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  div.innerHTML = `<span class="who" style="color:${colorForId(fromId)}">${escapeHtml(displayName)}</span><span class="time">${time}</span><span class="text">${escapeHtml(text)}</span>`;
+  div.className = 'chatMsg' + (pending ? ' pending' : '');
+  if (id) div.dataset.msgId = id;
+  if (pending) div.title = t('chat.notDelivered');
+  div.innerHTML = `<span class="who" style="color:${colorForId(fromId)}">${escapeHtml(displayName)}</span><span class="time">${formatChatTime(ts)}</span><span class="text">${escapeHtml(text)}</span>`;
   chatMessagesEl.appendChild(div);
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 }
 
+function isQueued(peerId, id) {
+  return !!id && !!pendingMessages.get(peerId)?.some((m) => m.id === id);
+}
+
 // Records a message in `peerId`'s DM thread (fromId is whoever actually
 // sent it — us or them) and renders it live only if that thread is open.
-function addChatMessage(peerId, fromId, text) {
-  if (!text) return;
+// Returns false for a duplicate: a sender re-sends anything it hasn't had a
+// delivery confirmation for, so the same message can legitimately arrive twice.
+function addChatMessage(peerId, fromId, text, { ts = Date.now(), id = null } = {}) {
+  if (!text) return false;
   const history = chatHistories.get(peerId) || [];
-  history.push({ fromId, text });
+  if (id && history.some((m) => m.id === id && m.fromId === fromId)) return false;
+  const entry = { fromId, text, ts, ...(id && { id }) };
+  history.push(entry);
   if (history.length > CHAT_HISTORY_LIMIT) history.splice(0, history.length - CHAT_HISTORY_LIMIT);
   chatHistories.set(peerId, history);
   saveChatHistories();
-  if (peerId === openChatPeerId) renderChatMessage(fromId, text);
+  if (peerId === openChatPeerId) renderChatMessage(entry, { pending: isQueued(peerId, id) });
+  return true;
 }
 
 // Queues a DM for `peerId` so it survives them being offline (or us restarting
-// before they come back) — delivered whenever a connection to them next opens,
-// see flushPendingMessages, called from both places a data connection can open
-// (ensureDataConnection and handleIncomingDataConnection).
+// before they come back). It stays queued until they confirm they got it (a
+// 'chat-ack') — handing it to a connection isn't enough, since a connection can
+// be dying without having noticed yet. See flushPendingMessages.
 function queueMessage(peerId, message) {
   const queue = pendingMessages.get(peerId) || [];
   queue.push(message);
@@ -1241,20 +1288,54 @@ function queueMessage(peerId, message) {
   savePendingMessages();
 }
 
+// peerId -> whether their client confirms delivery, learned from their 'hello'.
+// Older clients don't, and must not be waited on: they'd never confirm, so
+// we'd re-send forever and they — without de-duplication — would show every
+// re-send as a new message. Those get the old send-and-forget behavior.
+const ackSupport = new Map();
+
+// Sends everything queued for `peerId` if there's an open connection and we know
+// (from their hello) which delivery behavior they speak. Runs on their hello —
+// i.e. every time a connection to them opens — so anything an earlier connection
+// swallowed without a confirmation simply goes out again.
 function flushPendingMessages(peerId) {
   const conn = dataConnections.get(peerId);
   const queue = pendingMessages.get(peerId);
-  if (!conn?.open || !queue?.length) return;
+  if (!conn?.open || !queue?.length || !ackSupport.has(peerId)) return;
   for (const message of queue) conn.send(message);
-  pendingMessages.delete(peerId);
-  savePendingMessages();
+  if (!ackSupport.get(peerId)) {
+    markDelivered(peerId, queue.map((m) => m.id));
+    return;
+  }
+  // Pre-acknowledgement queue entries have no id to be confirmed by — send-and-forget those.
+  const unconfirmable = queue.filter((m) => !m.id);
+  if (unconfirmable.length) markDelivered(peerId, unconfirmable.map(() => undefined));
 }
 
-function addCallChatMessage(fromId, text) {
+// Drops delivered messages (by id; `undefined` ids drop id-less legacy entries)
+// from the queue, and un-dims them if their thread is on screen.
+function markDelivered(peerId, ids) {
+  const queue = pendingMessages.get(peerId);
+  if (!queue) return;
+  const remaining = queue.filter((m) => !ids.includes(m.id));
+  if (remaining.length === queue.length) return;
+  if (remaining.length) pendingMessages.set(peerId, remaining);
+  else pendingMessages.delete(peerId);
+  savePendingMessages();
+  if (peerId !== openChatPeerId) return;
+  for (const id of ids) {
+    if (!id) continue;
+    const el = chatMessagesEl.querySelector(`.chatMsg.pending[data-msg-id="${CSS.escape(id)}"]`);
+    if (el) { el.classList.remove('pending'); el.removeAttribute('title'); }
+  }
+}
+
+function addCallChatMessage(fromId, text, ts = Date.now()) {
   if (!text) return;
-  callChatHistory.push({ fromId, text });
+  const entry = { fromId, text, ts };
+  callChatHistory.push(entry);
   if (callChatHistory.length > CHAT_HISTORY_LIMIT) callChatHistory.splice(0, callChatHistory.length - CHAT_HISTORY_LIMIT);
-  if (openChatPeerId === null && calls.size > 0) renderChatMessage(fromId, text);
+  if (openChatPeerId === null && calls.size > 0) renderChatMessage(entry);
 }
 
 function openChatWith(peerId) {
@@ -1264,7 +1345,9 @@ function openChatWith(peerId) {
   chatCloseBtn.hidden = false;
   chatMessagesEl.innerHTML = '';
   chatMessagesEl.dataset.empty = t('chat.emptyDm');
-  for (const { fromId, text } of chatHistories.get(peerId) || []) renderChatMessage(fromId, text);
+  for (const entry of chatHistories.get(peerId) || []) {
+    renderChatMessage(entry, { pending: entry.fromId === peer.id && isQueued(peerId, entry.id) });
+  }
   chatPanelEl.hidden = false;
   chatInputEl.focus();
   renderPeerList(); // so the right friend's chat button shows as active
@@ -1277,7 +1360,7 @@ function showCallChat() {
   chatCloseBtn.hidden = true;
   chatMessagesEl.innerHTML = '';
   chatMessagesEl.dataset.empty = t('chat.emptyCall');
-  for (const { fromId, text } of callChatHistory) renderChatMessage(fromId, text);
+  for (const entry of callChatHistory) renderChatMessage(entry);
   chatPanelEl.hidden = false;
 }
 
@@ -1305,13 +1388,15 @@ function sendChatMessage() {
   if (!text) return;
   if (openChatPeerId !== null) {
     const peerId = openChatPeerId;
+    const message = { type: 'chat', scope: 'dm', text, id: crypto.randomUUID(), ts: Date.now() };
     ensureDataConnection(peerId);
-    queueMessage(peerId, { type: 'chat', scope: 'dm', text });
-    flushPendingMessages(peerId); // delivers now if already connected; otherwise waits for 'open'
-    addChatMessage(peerId, peer.id, text);
+    queueMessage(peerId, message);
+    addChatMessage(peerId, peer.id, text, { ts: message.ts, id: message.id }); // before the flush, so an old-client flush can un-dim it
+    flushPendingMessages(peerId); // delivers now if already connected; otherwise on their next hello
   } else if (calls.size > 0) {
-    for (const id of calls.keys()) dataConnections.get(id)?.send({ type: 'chat', scope: 'call', text });
-    addCallChatMessage(peer.id, text);
+    const ts = Date.now();
+    for (const id of calls.keys()) dataConnections.get(id)?.send({ type: 'chat', scope: 'call', text, ts });
+    addCallChatMessage(peer.id, text, ts);
   } else {
     return;
   }
@@ -1355,7 +1440,7 @@ function probePresence(id) {
   activeProbes.set(id, () => finish(false)); // so a peer-unavailable error that beats the timeout can end it early
   probe.on('open', () => {
     finish(true);
-    probe.send({ type: 'hello', name: getMyUsername(), activity: outgoingActivity() });
+    probe.send({ type: 'hello', name: getMyUsername(), activity: outgoingActivity(), acks: true });
     // Give their reply (sent back from handleIncomingDataConnection on their end) a
     // moment to arrive before tearing the probe connection back down.
     setTimeout(() => { try { probe.close(); } catch {} }, 800);
@@ -1476,6 +1561,59 @@ function renderIncomingCalls() {
     });
     incomingCallsEl.appendChild(div);
   }
+}
+
+// --- who's allowed to ring us -----------------------------------------
+// Anyone who has our ID can place a call to it. With "Only friends can call me"
+// on (the default), calls from anyone who isn't an accepted friend are declined
+// without ringing — with one exception: someone joining a call we're already
+// in, through a friend of theirs who's in it with us. Joining works by the
+// newcomer calling everyone already in the call directly (see 'roster'), and
+// they needn't be friends with all of them; the member they joined through
+// vouches for them with a 'peer-joined' message to the rest of us.
+
+function getFriendsOnlyCalls() {
+  return localStorage.getItem('patycord.friendsOnlyCalls') !== 'off'; // on by default
+}
+
+function setFriendsOnlyCalls(enabled) {
+  localStorage.setItem('patycord.friendsOnlyCalls', enabled ? 'on' : 'off');
+}
+
+const introducedPeers = new Map(); // peerId -> when a call member said they're joining
+const INTRODUCTION_TTL_MS = 60000;
+
+function mayRing(id) {
+  if (!getFriendsOnlyCalls() || acceptedFriends().some((f) => f.id === id)) return true;
+  const introducedAt = introducedPeers.get(id);
+  return calls.size > 0 && !!introducedAt && Date.now() - introducedAt < INTRODUCTION_TTL_MS;
+}
+
+function admitIncomingCall(call) {
+  if (mayRing(call.peer)) { ringIncomingCall(call); return; }
+  if (calls.size === 0) { declineCall(call); return; }
+  // Mid-call, a stranger may be a friend-of-a-friend joining: the introduction
+  // for them goes out at the same moment they start dialing, and can land just
+  // after their call does. Give it a few seconds before deciding.
+  let hungUp = false;
+  call.on('close', () => { hungUp = true; });
+  setTimeout(() => {
+    if (hungUp) return;
+    if (mayRing(call.peer)) ringIncomingCall(call);
+    else declineCall(call);
+  }, 3000);
+}
+
+function declineCall(call) {
+  call.close();
+  log(t('log.callDeclinedStranger', { tag: tagFor(call.peer, remoteNames.get(call.peer)) }));
+}
+
+function ringIncomingCall(call) {
+  pendingCalls.set(call.peer, call);
+  renderIncomingCalls();
+  log(t('log.incomingCall', { name: friendName(call.peer) }));
+  call.on('close', () => { pendingCalls.delete(call.peer); renderIncomingCalls(); });
 }
 
 // --- friend requests -------------------------------------------------
@@ -1885,10 +2023,7 @@ async function main() {
       handleIncomingScreenShare(call);
       return;
     }
-    pendingCalls.set(call.peer, call);
-    renderIncomingCalls();
-    log(t('log.incomingCall', { name: friendName(call.peer) }));
-    call.on('close', () => { pendingCalls.delete(call.peer); renderIncomingCalls(); });
+    admitIncomingCall(call);
   });
 
   peer.on('connection', (conn) => handleIncomingDataConnection(conn));
@@ -1960,6 +2095,7 @@ settingsBtn.addEventListener('click', () => {
   settingsNameInput.value = getMyUsername();
   noiseSuppressionToggle.checked = getNoiseSuppressionEnabled();
   shareActivityToggle.checked = getShareActivityEnabled();
+  friendsOnlyCallsToggle.checked = getFriendsOnlyCalls();
   for (const b of settingsTabBtns) b.classList.toggle('active', b.dataset.tab === 'account');
   for (const pane of settingsPanes) pane.hidden = pane.dataset.pane !== 'account';
   settingsModal.hidden = false;
@@ -1981,6 +2117,9 @@ noiseSuppressionToggle.addEventListener('change', () => {
 });
 shareActivityToggle.addEventListener('change', () => {
   setShareActivityEnabled(shareActivityToggle.checked);
+});
+friendsOnlyCallsToggle.addEventListener('change', () => {
+  setFriendsOnlyCalls(friendsOnlyCallsToggle.checked);
 });
 settingsSaveNameBtn.addEventListener('click', () => {
   const name = settingsNameInput.value.trim();

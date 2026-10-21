@@ -24,6 +24,8 @@ const translations = {
     'settings.privacy': 'Privacy',
     'settings.shareActivity': "Share what I'm playing",
     'settings.shareActivityDesc': 'Lets friends see the game you currently have open',
+    'settings.friendsOnlyCalls': 'Only friends can call me',
+    'settings.friendsOnlyCallsDesc': 'Calls from anyone else are declined without ringing',
     'settings.language': 'Language',
     'settings.connecting': 'connecting…',
 
@@ -93,6 +95,7 @@ const translations = {
     'chat.you': 'You',
     'chat.emptyDm': 'No messages yet — say hi!',
     'chat.emptyCall': 'Messages here go to everyone in the call.',
+    'chat.notDelivered': "Not delivered yet — it'll be sent when they're online.",
     'sidebar.chat': 'Chat',
 
     'incomingCall.label': 'Incoming call',
@@ -132,6 +135,7 @@ const translations = {
     'log.rnnoiseActive': 'noise suppression: RNNoise (local, open-source ML model)',
     'log.ready': 'ready — press Call next to a friend to connect',
     'log.incomingCall': 'incoming call from {name}',
+    'log.callDeclinedStranger': 'declined a call from {tag} (not a friend)',
     'log.peerError': 'peer error: {error}',
     'log.friendRequestSent': 'friend request sent to {name}',
     'log.updateCheckFailed': 'update check failed: {error}',
@@ -160,6 +164,8 @@ const translations = {
     'settings.privacy': 'Adatvédelem',
     'settings.shareActivity': 'Megosztom, mit játszom',
     'settings.shareActivityDesc': 'Barátaid látják, milyen játékot futtatsz éppen',
+    'settings.friendsOnlyCalls': 'Csak a barátaim hívhatnak',
+    'settings.friendsOnlyCallsDesc': 'Mások hívását csengetés nélkül elutasítja',
     'settings.language': 'Nyelv',
     'settings.connecting': 'csatlakozás…',
 
@@ -229,6 +235,7 @@ const translations = {
     'chat.you': 'Te',
     'chat.emptyDm': 'Még nincsenek üzenetek — köszönj!',
     'chat.emptyCall': 'Az itt írt üzeneteket mindenki látja a hívásban.',
+    'chat.notDelivered': 'Még nincs kézbesítve — akkor küldjük el, amikor online lesz.',
     'sidebar.chat': 'Csevegés',
 
     'incomingCall.label': 'Bejövő hívás',
@@ -268,6 +275,7 @@ const translations = {
     'log.rnnoiseActive': 'zajszűrés: RNNoise (helyi, nyílt forráskódú ML modell)',
     'log.ready': 'készen áll — válassz egy barátot, és nyomd meg a Hívás gombot a csatlakozáshoz',
     'log.incomingCall': 'bejövő hívás tőle: {name}',
+    'log.callDeclinedStranger': 'elutasított hívás tőle: {tag} (nem barát)',
     'log.peerError': 'kapcsolati hiba: {error}',
     'log.friendRequestSent': 'barátkérés elküldve neki: {name}',
     'log.updateCheckFailed': 'a frissítés keresése sikertelen: {error}',
