@@ -19,6 +19,7 @@ const speakerTestBtn = document.getElementById('speakerTestBtn');
 const pttToggle = document.getElementById('pttToggle');
 const closeToTrayToggle = document.getElementById('closeToTrayToggle');
 const startWithWindowsToggle = document.getElementById('startWithWindowsToggle');
+const notificationsToggle = document.getElementById('notificationsToggle');
 const pttKeyRow = document.getElementById('pttKeyRow');
 const pttKeyBtn = document.getElementById('pttKeyBtn');
 const languageSelectEl = document.getElementById('languageSelect');
@@ -301,6 +302,25 @@ function setShareActivityEnabled(enabled) {
 function tauriInvoke(cmd, args) {
   const invoke = window.__TAURI__?.core?.invoke;
   return invoke ? invoke(cmd, args) : Promise.reject(new Error('not running in the app'));
+}
+
+// --- Windows notifications ---------------------------------------------------
+// Only while the window isn't in front (in the tray, minimized, or behind a
+// game) — otherwise the in-app ringing, banners and toasts already cover it.
+
+function getDesktopNotifications() {
+  return localStorage.getItem('patycord.notifications') !== 'off';
+}
+
+let flashingForCall = false;
+
+function appInBackground() {
+  return document.hidden || !document.hasFocus();
+}
+
+function notifyDesktop(title, body) {
+  if (!getDesktopNotifications() || !appInBackground()) return;
+  tauriInvoke('notify', { title, body }).catch(() => {});
 }
 
 // --- tray ------------------------------------------------------------------
@@ -1273,6 +1293,7 @@ function handleDataMessage(fromId, msg) {
       // Confirm even a duplicate — it means our earlier confirmation got lost.
       if (id) dataConnections.get(fromId)?.send({ type: 'chat-ack', id });
       if (isNew && fromId !== openChatPeerId) toast(t('toast.newMessage', { name: friendName(fromId) }), 'info');
+      if (isNew) notifyDesktop(friendName(fromId), text.length > 140 ? text.slice(0, 140) + '…' : text);
     } else {
       // 'call' scope (or unmarked, from an older client) — only from someone actually in the call with us.
       if (!calls.has(fromId)) return;
@@ -1621,7 +1642,13 @@ function friendName(id) {
 
 function renderIncomingCalls() {
   if (pendingCalls.size > 0) startRinging();
-  else stopRinging();
+  else {
+    stopRinging();
+    if (flashingForCall) { // nothing left to answer
+      flashingForCall = false;
+      tauriInvoke('request_attention', { urgent: false }).catch(() => {});
+    }
+  }
   incomingCallsEl.innerHTML = '';
   for (const [id, call] of pendingCalls) {
     const name = friendName(id);
@@ -1703,6 +1730,11 @@ function declineCall(call) {
 function ringIncomingCall(call) {
   pendingCalls.set(call.peer, call);
   renderIncomingCalls();
+  notifyDesktop(t('notify.incomingCall', { name: friendName(call.peer) }), t('notify.incomingCallBody'));
+  if (appInBackground()) {
+    flashingForCall = true;
+    tauriInvoke('request_attention', { urgent: true }).catch(() => {});
+  }
   log(t('log.incomingCall', { name: friendName(call.peer) }));
   call.on('close', () => { pendingCalls.delete(call.peer); renderIncomingCalls(); });
 }
@@ -1723,6 +1755,7 @@ function handleFriendRequest(fromId, name) {
   if (pendingFriendRequests.has(fromId)) return; // already showing one from them
   pendingFriendRequests.set(fromId, name);
   renderFriendRequests(); // the banner itself is the notice — no need for a toast too
+  notifyDesktop(t('notify.friendRequest', { name: name || t('unknown') }), t('notify.friendRequestBody'));
 }
 
 function renderFriendRequests() {
@@ -2340,6 +2373,7 @@ settingsBtn.addEventListener('click', () => {
   pttCapturing = false;
   renderPttSettings();
   closeToTrayToggle.checked = getCloseToTray();
+  notificationsToggle.checked = getDesktopNotifications();
   // The registry entry is the source of truth — it can also be removed from Task Manager's Startup tab.
   tauriInvoke('plugin:autostart|is_enabled').then((on) => { startWithWindowsToggle.checked = !!on; }).catch(() => {});
   shareActivityToggle.checked = getShareActivityEnabled();
@@ -2390,6 +2424,9 @@ shareActivityToggle.addEventListener('change', () => {
 });
 friendsOnlyCallsToggle.addEventListener('change', () => {
   setFriendsOnlyCalls(friendsOnlyCallsToggle.checked);
+});
+notificationsToggle.addEventListener('change', () => {
+  localStorage.setItem('patycord.notifications', notificationsToggle.checked ? 'on' : 'off');
 });
 closeToTrayToggle.addEventListener('change', () => {
   localStorage.setItem('patycord.closeToTray', closeToTrayToggle.checked ? 'on' : 'off');

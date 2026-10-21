@@ -14,6 +14,8 @@
     "allow-set-push-to-talk-key",
     "allow-set-close-to-tray",
     "allow-set-tray-labels",
+    "allow-notify",
+    "allow-request-attention",
     "autostart:allow-enable",
     "autostart:allow-disable",
     "autostart:allow-is-enabled"

@@ -19,6 +19,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-autostart = "~2.5" # 2.6+ needs tauri 2.12, whose wry needs a newer webview2-com than the one pinned below
 tauri-plugin-single-instance = "~2.4" # same: 2.5+ needs tauri 2.12
+tauri-plugin-notification = "~2.4" # 2.5+ needs tauri 2.12, see above
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "=0.38.2"

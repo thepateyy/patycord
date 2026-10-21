@@ -535,6 +535,40 @@ fn set_tray_labels(menu: tauri::State<'_, TrayMenu>, open: String, quit: String)
     let _ = menu.quit.set_text(quit);
 }
 
+// --- getting your attention -----------------------------------------------
+
+// A Windows notification. The frontend only sends these while the window isn't
+// focused — in-app toasts cover the rest.
+#[tauri::command]
+fn notify(app: tauri::AppHandle, title: String, body: String) {
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app.notification().builder().title(title).body(body).show();
+}
+
+// Flashes the taskbar button until the window is focused (or stops flashing).
+// Hidden in the tray there's no taskbar button to flash, so for an incoming call
+// the window is first put back minimized — without activating it, so a
+// fullscreen game doesn't lose focus.
+#[tauri::command]
+fn request_attention(app: tauri::AppHandle, urgent: bool) {
+    use tauri::Manager;
+    let Some(window) = app.get_webview_window("main") else { return };
+    if !urgent {
+        let _ = window.request_user_attention(None);
+        return;
+    }
+    #[cfg(target_os = "windows")]
+    if !window.is_visible().unwrap_or(true) {
+        use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWMINNOACTIVE};
+        if let Ok(hwnd) = window.hwnd() {
+            unsafe {
+                let _ = ShowWindow(windows::Win32::Foundation::HWND(hwnd.0 as _), SW_SHOWMINNOACTIVE);
+            }
+        }
+    }
+    let _ = window.request_user_attention(Some(tauri::UserAttentionType::Critical));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -544,6 +578,7 @@ pub fn run() {
         // this one back.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main_window(app)))
         .plugin(tauri_plugin_autostart::Builder::new().arg(STARTED_HIDDEN_ARG).build())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
@@ -552,7 +587,9 @@ pub fn run() {
             set_activity_detection,
             set_push_to_talk_key,
             set_close_to_tray,
-            set_tray_labels
+            set_tray_labels,
+            notify,
+            request_attention
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
