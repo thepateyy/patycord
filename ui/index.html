@@ -61,6 +61,9 @@
   label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); display: block; margin-bottom: 6px; font-weight: 600; }
   .row { display: flex; gap: 8px; align-items: center; }
   .row input { flex: 1; min-width: 0; }
+  .row[hidden], label[hidden] { display: none; }
+  .settingsPane button.secondary { background: var(--bg); border: 1px solid var(--border); }
+  .settingsPane button.secondary:hover { border-color: var(--accent); }
   /* What's on screen is the pretty Name#1234 tag, not the real ID — so it's
      click-to-copy rather than text-selectable, which would copy the wrong thing. */
   #myId {
@@ -267,6 +270,9 @@
   .settingsPanes { flex: 1; min-width: 0; padding: 16px; }
   .settingsPane[hidden] { display: none; }
   .settingsNav .appVersion { margin-top: auto; padding: 0 2px; text-align: left; }
+  .micMeter { height: 6px; border-radius: 999px; background: var(--bg); border: 1px solid var(--border); margin-top: 8px; overflow: hidden; }
+  .micMeterFill { height: 100%; width: 0%; background: var(--success); transition: width 0.06s linear; }
+  .row select { flex: 1; min-width: 0; }
 
   #releaseNotesModal .card { width: min(420px, 90%); margin: 0; max-height: 70vh; display: flex; flex-direction: column; }
   .releaseNotesBody {
@@ -464,7 +470,18 @@
           </div>
 
           <div class="settingsPane" data-pane="audio" hidden>
-            <div class="switchRow">
+            <label for="micSelect" data-i18n="settings.microphone">Microphone</label>
+            <select id="micSelect"></select>
+            <div class="micMeter"><div id="micMeterFill" class="micMeterFill"></div></div>
+            <p class="hint" data-i18n="settings.micMeterHint">Say something — the bar should move.</p>
+
+            <label for="speakerSelect" style="margin-top:14px;" data-i18n="settings.speakers">Speakers</label>
+            <div class="row">
+              <select id="speakerSelect"></select>
+              <button id="speakerTestBtn" class="secondary" data-i18n="settings.testSound">Test</button>
+            </div>
+
+            <div class="switchRow" style="margin-top:16px;">
               <span class="switchLabel">
                 <span data-i18n="settings.noiseSuppression">Noise suppression</span>
                 <small data-i18n="settings.noiseSuppressionDesc">Filters background noise from your mic</small>

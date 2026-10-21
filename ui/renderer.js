@@ -12,6 +12,10 @@ const settingsSaveNameBtn = document.getElementById('settingsSaveNameBtn');
 const noiseSuppressionToggle = document.getElementById('noiseSuppressionToggle');
 const shareActivityToggle = document.getElementById('shareActivityToggle');
 const friendsOnlyCallsToggle = document.getElementById('friendsOnlyCallsToggle');
+const micSelectEl = document.getElementById('micSelect');
+const micMeterFillEl = document.getElementById('micMeterFill');
+const speakerSelectEl = document.getElementById('speakerSelect');
+const speakerTestBtn = document.getElementById('speakerTestBtn');
 const languageSelectEl = document.getElementById('languageSelect');
 const usernameModal = document.getElementById('usernameModal');
 const usernameInput = document.getElementById('usernameInput');
@@ -519,7 +523,10 @@ let uiSoundCtx = null;
 let uiSoundIdleTimer = null;
 function playTone(freq, durationMs, { type = 'sine', gain = 0.15, delayMs = 0 } = {}) {
   try {
-    if (!uiSoundCtx) uiSoundCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (!uiSoundCtx) {
+      uiSoundCtx = new (window.AudioContext || window.webkitAudioContext)();
+      applySpeakerTo(uiSoundCtx);
+    }
     if (uiSoundCtx.state === 'suspended') uiSoundCtx.resume();
     clearTimeout(uiSoundIdleTimer);
     uiSoundIdleTimer = setTimeout(() => uiSoundCtx.suspend().catch(() => {}), delayMs + durationMs + 1000);
@@ -990,6 +997,7 @@ document.addEventListener('click', (e) => {
 
 function attachRemoteStream(peerId, stream) {
   const audio = new Audio();
+  applySpeakerTo(audio);
   audio.srcObject = stream;
   audio.autoplay = true;
   const entry = calls.get(peerId) || {};
@@ -1675,6 +1683,7 @@ function addScreenTile(peerId, call) {
   const tile = document.createElement('div');
   tile.className = 'screenTile';
   const video = document.createElement('video');
+  applySpeakerTo(video); // the sharer's system audio, if they included it
   video.autoplay = true;
   video.playsInline = true;
   // Not muted — if the sharer included system audio, we want to actually hear it.
@@ -1856,11 +1865,121 @@ function micConstraints() {
   // With RNNoise doing the denoising, the browser's own suppression on top would
   // just double-process the same audio through two different denoisers.
   const builtInSuppression = rnnoiseReady ? false : getNoiseSuppressionEnabled();
+  const device = getMicDevice();
   return {
-    audio: { noiseSuppression: builtInSuppression, voiceIsolation: builtInSuppression, echoCancellation: true, autoGainControl: true },
+    audio: {
+      noiseSuppression: builtInSuppression, voiceIsolation: builtInSuppression, echoCancellation: true, autoGainControl: true,
+      // "ideal", not "exact": an unplugged headset falls back to the default mic instead of failing the call.
+      ...(device && { deviceId: { ideal: device } }),
+    },
     video: false,
   };
 }
+
+// --- audio devices ---------------------------------------------------------
+// Which mic and speakers to use, by deviceId; empty means the Windows default.
+
+function getMicDevice() {
+  return localStorage.getItem('patycord.micDevice') || '';
+}
+
+function getSpeakerDevice() {
+  return localStorage.getItem('patycord.speakerDevice') || '';
+}
+
+function setMicDevice(id) {
+  localStorage.setItem('patycord.micDevice', id);
+  // Mid-call, swap over right away. What goes out over WebRTC is the pipeline's
+  // output stream, not the mic itself, so the call never notices the change.
+  if (localStream) {
+    localStream.getTracks().forEach((track) => track.stop());
+    localStream = null;
+    micSourceNode?.disconnect();
+    micSourceNode = null;
+    startMic();
+  }
+  if (micMeter) startMicMeter();
+}
+
+function setSpeakerDevice(id) {
+  localStorage.setItem('patycord.speakerDevice', id);
+  for (const entry of calls.values()) applySpeakerTo(entry.audioEl);
+  for (const { videoEl } of screenTiles.values()) applySpeakerTo(videoEl);
+  applySpeakerTo(uiSoundCtx);
+}
+
+// Works on <audio>/<video> elements and AudioContexts alike.
+function applySpeakerTo(target) {
+  if (target?.setSinkId) target.setSinkId(getSpeakerDevice()).catch(() => {});
+}
+
+async function populateDeviceSelects() {
+  let devices = [];
+  try { devices = await navigator.mediaDevices.enumerateDevices(); } catch {}
+  fillDeviceSelect(micSelectEl, devices.filter((d) => d.kind === 'audioinput'), getMicDevice());
+  fillDeviceSelect(speakerSelectEl, devices.filter((d) => d.kind === 'audiooutput'), getSpeakerDevice());
+}
+
+function fillDeviceSelect(select, devices, selected) {
+  select.innerHTML = '';
+  const add = (value, label) => {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    select.appendChild(opt);
+  };
+  add('', t('settings.systemDefault'));
+  // Chromium also lists the Windows default/communications devices as aliases of
+  // real ones — our own "System default" entry above covers those.
+  const real = devices.filter((d) => d.deviceId !== 'default' && d.deviceId !== 'communications');
+  real.forEach((d, i) => add(d.deviceId, d.label || t('settings.deviceN', { n: i + 1 })));
+  select.value = real.some((d) => d.deviceId === selected) ? selected : '';
+}
+
+// Live input level for the chosen mic while Settings → Audio is open, from a
+// short-lived capture of its own — so it works outside calls too, and stops
+// (releasing the mic) as soon as you leave that tab.
+let micMeter = null;
+
+async function startMicMeter() {
+  stopMicMeter();
+  const meter = {};
+  micMeter = meter;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia(micConstraints());
+    if (micMeter !== meter) { stream.getTracks().forEach((track) => track.stop()); return; } // closed meanwhile
+    meter.stream = stream;
+    meter.ctx = new AudioContext();
+    const analyser = meter.ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    meter.ctx.createMediaStreamSource(stream).connect(analyser);
+    const samples = new Float32Array(analyser.fftSize);
+    const tick = () => {
+      analyser.getFloatTimeDomainData(samples);
+      let sum = 0;
+      for (const s of samples) sum += s * s;
+      const db = 20 * Math.log10(Math.sqrt(sum / samples.length) || 1e-6);
+      micMeterFillEl.style.width = `${Math.max(0, Math.min(1, (db + 60) / 60)) * 100}%`; // -60 dB .. 0 dB
+      meter.raf = requestAnimationFrame(tick);
+    };
+    tick();
+  } catch {
+    if (micMeter === meter) micMeter = null;
+  }
+}
+
+function stopMicMeter() {
+  if (!micMeter) return;
+  cancelAnimationFrame(micMeter.raf);
+  micMeter.stream?.getTracks().forEach((track) => track.stop());
+  micMeter.ctx?.close().catch(() => {});
+  micMeter = null;
+  micMeterFillEl.style.width = '0%';
+}
+
+navigator.mediaDevices?.addEventListener('devicechange', () => {
+  if (!settingsModal.hidden) populateDeviceSelects();
+});
 
 function startMic() {
   if (localStream || micStarting) return;
@@ -2036,21 +2155,43 @@ settingsBtn.addEventListener('click', () => {
   noiseSuppressionToggle.checked = getNoiseSuppressionEnabled();
   shareActivityToggle.checked = getShareActivityEnabled();
   friendsOnlyCallsToggle.checked = getFriendsOnlyCalls();
-  for (const b of settingsTabBtns) b.classList.toggle('active', b.dataset.tab === 'account');
-  for (const pane of settingsPanes) pane.hidden = pane.dataset.pane !== 'account';
   settingsModal.hidden = false;
+  showSettingsPane('account');
   appVersionEl.textContent = '';
   window.__TAURI__?.app.getVersion().then((v) => { appVersionEl.textContent = `patycord v${v}`; });
 });
-closeSettingsBtn.addEventListener('click', () => { settingsModal.hidden = true; });
+closeSettingsBtn.addEventListener('click', closeSettings);
 
 const settingsTabBtns = document.querySelectorAll('.settingsTabBtn');
 const settingsPanes = document.querySelectorAll('.settingsPane');
 for (const btn of settingsTabBtns) {
-  btn.addEventListener('click', () => {
-    for (const b of settingsTabBtns) b.classList.toggle('active', b === btn);
-    for (const pane of settingsPanes) pane.hidden = pane.dataset.pane !== btn.dataset.tab;
-  });
+  btn.addEventListener('click', () => showSettingsPane(btn.dataset.tab));
+}
+
+function showSettingsPane(name) {
+  for (const b of settingsTabBtns) b.classList.toggle('active', b.dataset.tab === name);
+  for (const pane of settingsPanes) pane.hidden = pane.dataset.pane !== name;
+  if (name === 'audio') {
+    populateDeviceSelects();
+    startMicMeter();
+  } else {
+    stopMicMeter();
+  }
+}
+
+function closeSettings() {
+  settingsModal.hidden = true;
+  stopMicMeter();
+}
+
+micSelectEl.addEventListener('change', () => setMicDevice(micSelectEl.value));
+speakerSelectEl.addEventListener('change', () => setSpeakerDevice(speakerSelectEl.value));
+speakerTestBtn.addEventListener('click', playRing);
+// No output-device switching in this webview: hide the picker rather than show one that does nothing.
+if (!('setSinkId' in HTMLMediaElement.prototype)) {
+  const row = speakerSelectEl.closest('.row');
+  row.hidden = true;
+  row.previousElementSibling.hidden = true; // its label
 }
 noiseSuppressionToggle.addEventListener('change', () => {
   setNoiseSuppressionEnabled(noiseSuppressionToggle.checked);
@@ -2065,7 +2206,7 @@ settingsSaveNameBtn.addEventListener('click', () => {
   const name = settingsNameInput.value.trim();
   if (!name) return;
   setMyUsername(name);
-  settingsModal.hidden = true;
+  closeSettings();
 });
 settingsNameInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') settingsSaveNameBtn.click();
@@ -2177,13 +2318,12 @@ closeReleaseNotesBtn.addEventListener('click', closeReleaseNotes);
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (!releaseNotesModalEl.hidden) closeReleaseNotes();
-  else if (!settingsModal.hidden) settingsModal.hidden = true;
+  else if (!settingsModal.hidden) closeSettings();
   closeVolumePopover();
   closeScreenSharePopover();
 });
-for (const modal of [settingsModal, releaseNotesModalEl]) {
-  modal.addEventListener('click', (e) => { if (e.target === modal) modal.hidden = true; });
-}
+settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal) closeSettings(); });
+releaseNotesModalEl.addEventListener('click', (e) => { if (e.target === releaseNotesModalEl) closeReleaseNotes(); });
 
 // --- auto-update -------------------------------------------------------
 // Checks GitHub Releases (via the endpoint in tauri.conf.json) for a newer
