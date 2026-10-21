@@ -96,6 +96,7 @@ const pendingFriendRequests = new Map(); // peerId -> name, awaiting Accept/Decl
 // point module-level code runs synchronously.
 let chatHistories = new Map(); // peerId -> [{ fromId, text }], per-friend DMs — independent of calls, persisted encrypted (see secureStore)
 let pendingMessages = new Map(); // peerId -> [{ type, scope, text }], DMs sent while they were offline — flushed once a connection to them opens
+let unreadCounts = new Map(); // peerId -> DMs from them not yet seen (their thread wasn't open), persisted like the rest
 let openChatPeerId = null; // whichever friend's DM thread is currently showing, or null (showing call chat / nothing)
 let callChatHistory = []; // shared broadcast thread for whoever's in the current call — resets when the call ends, like it always has
 let wasInCall = false; // so renderCallPanel() can detect the moment a call actually ends, to reset callChatHistory
@@ -176,7 +177,7 @@ const ICONS = {
 // (or another process reading it directly) can't be decrypted without also being
 // that user. Cosmetic prefs (language, noise suppression, screen-share quality,
 // ...) aren't worth the complexity and stay in plain localStorage.
-const SECURE_STORE_KEYS = ['myId', 'myUsername', 'friends', 'chatHistories', 'pendingMessages'];
+const SECURE_STORE_KEYS = ['myId', 'myUsername', 'friends', 'chatHistories', 'pendingMessages', 'unreadCounts'];
 const secureStore = {}; // populated by initSecureStore() before anything else runs
 let secureStoreReadOnly = false; // set when the store exists but couldn't be decrypted — see initSecureStore
 
@@ -454,6 +455,27 @@ function savePendingMessages() {
   saveSecureStore();
 }
 
+function loadUnreadCounts() {
+  const raw = secureStore.unreadCounts && typeof secureStore.unreadCounts === 'object' ? secureStore.unreadCounts : {};
+  return new Map(Object.entries(raw).filter(([id, n]) => id && Number.isInteger(n) && n > 0));
+}
+
+function setUnread(peerId, count) {
+  if ((unreadCounts.get(peerId) || 0) === count) return;
+  if (count > 0) unreadCounts.set(peerId, count);
+  else unreadCounts.delete(peerId);
+  secureStore.unreadCounts = Object.fromEntries(unreadCounts);
+  saveSecureStore();
+  renderUnreadTitle();
+  scheduleRenderPeerList();
+}
+
+// "(3) patycord" — visible on the taskbar button and in Alt+Tab.
+function renderUnreadTitle() {
+  const total = [...unreadCounts.values()].reduce((a, b) => a + b, 0);
+  document.title = total ? `(${total}) patycord` : 'patycord';
+}
+
 // Entries saved before the pending/accepted split have no `status` field —
 // treat that as 'accepted' so existing friends don't vanish.
 function acceptedFriends() {
@@ -539,6 +561,7 @@ function removeFriend(id) {
   saveChatHistories();
   pendingMessages.delete(id);
   savePendingMessages();
+  setUnread(id, 0);
   if (openChatPeerId === id) closeChat();
   if (!calls.has(id)) { dataConnections.get(id)?.close(); dataConnections.delete(id); } // keep it if still mid-call
   renderPeerList();
@@ -754,7 +777,8 @@ function renderPeerList() {
     const activity = isOnline ? activityByPeer.get(friend.id) : null;
     const confirming = confirmRemoveId === friend.id;
     const li = document.createElement('li');
-    li.className = 'friendRow';
+    const unread = unreadCounts.get(friend.id) || 0;
+    li.className = 'friendRow' + (unread ? ' unread' : '');
     li.innerHTML = `
       <span class="who" title="${escapeHtml(tagFor(friend.id, name))}">
         <span class="avatarWrap">
@@ -769,7 +793,7 @@ function renderPeerList() {
       <span class="actions">
         ${confirming ? '' : `
         ${inCall || isOnline ? `<button class="callToggleBtn ${inCall ? 'hangupBtn' : 'callBtnIcon'}" title="${inCall ? (connected ? t('sidebar.hangUp') : t('sidebar.cancel')) : t('sidebar.call')}"></button>` : ''}
-        ${isOnline ? `<button class="chatToggleBtn${friend.id === openChatPeerId ? ' active' : ''}" title="${t('sidebar.chat')}"></button>` : ''}`}
+        <button class="chatToggleBtn${friend.id === openChatPeerId ? ' active' : ''}${isOnline ? '' : ' offline'}" title="${isOnline ? t('sidebar.chat') : t('sidebar.chatOffline')}"></button>`}
         <button class="removeBtn ghost${confirming ? ' confirm' : ''}" title="${t('sidebar.remove')}">${confirming ? t('sidebar.removeConfirm') : '×'}</button>
       </span>`;
     const callToggleBtn = li.querySelector('.callToggleBtn');
@@ -783,6 +807,7 @@ function renderPeerList() {
     const chatToggleBtn = li.querySelector('.chatToggleBtn');
     if (chatToggleBtn) {
       chatToggleBtn.innerHTML = ICONS.chat;
+      if (unread) chatToggleBtn.insertAdjacentHTML('beforeend', `<span class="unreadBadge">${unread > 99 ? '99+' : unread}</span>`);
       chatToggleBtn.addEventListener('click', () => {
         if (openChatPeerId === friend.id) closeChat();
         else openChatWith(friend.id);
@@ -1386,6 +1411,7 @@ function addChatMessage(peerId, fromId, text, { ts = Date.now(), id = null } = {
   chatHistories.set(peerId, history);
   saveChatHistories();
   if (peerId === openChatPeerId) renderChatMessage(entry, { pending: isQueued(peerId, id) });
+  else if (fromId === peerId) setUnread(peerId, (unreadCounts.get(peerId) || 0) + 1);
   return true;
 }
 
@@ -1453,6 +1479,7 @@ function addCallChatMessage(fromId, text, ts = Date.now()) {
 function openChatWith(peerId) {
   ensureDataConnection(peerId); // independent of any call — opens on demand
   openChatPeerId = peerId;
+  setUnread(peerId, 0);
   chatHeaderNameEl.textContent = friendName(peerId);
   chatCloseBtn.hidden = false;
   chatMessagesEl.innerHTML = '';
@@ -2641,6 +2668,8 @@ async function init() {
   await initSecureStore();
   chatHistories = loadChatHistories();
   pendingMessages = loadPendingMessages();
+  unreadCounts = loadUnreadCounts();
+  renderUnreadTitle();
   if (getMyUsername()) setMyUsername(getMyUsername());
   saveFriends(loadFriends()); // persist the cleanup of any bad entries from past bugs
   renderPeerList();

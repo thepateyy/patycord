@@ -178,6 +178,15 @@
   .chatToggleBtn svg { width: 14px; height: 14px; }
   .chatToggleBtn:hover { background: var(--accent-hover); }
   .chatToggleBtn.active { background: var(--accent-hover); box-shadow: 0 0 0 2px var(--accent); }
+  .chatToggleBtn.offline { background: var(--bg-elev-2); color: var(--text-muted); } /* still works — messages wait for them */
+  .chatToggleBtn.offline:hover { color: var(--text); }
+  .chatToggleBtn { position: relative; }
+  .unreadBadge {
+    position: absolute; top: -5px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px;
+    background: var(--danger); color: #fff; font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
+    box-shadow: 0 0 0 2px var(--bg);
+  }
+  li.friendRow.unread .name { color: #fff; font-weight: 800; }
   .empty { color: #6b6c72; font-size: 12.5px; padding: 6px 0; }
 
   #incomingCalls, #friendRequests { display: flex; flex-direction: column; gap: 8px; }

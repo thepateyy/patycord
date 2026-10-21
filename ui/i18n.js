@@ -122,6 +122,7 @@ const translations = {
     'chat.emptyCall': 'Messages here go to everyone in the call.',
     'chat.notDelivered': "Not delivered yet — it'll be sent when they're online.",
     'sidebar.chat': 'Chat',
+    'sidebar.chatOffline': "Chat — messages are delivered when they're online",
 
     'incomingCall.label': 'Incoming call',
     'friendRequest.label': 'Friend request',
@@ -287,6 +288,7 @@ const translations = {
     'chat.emptyCall': 'Az itt írt üzeneteket mindenki látja a hívásban.',
     'chat.notDelivered': 'Még nincs kézbesítve — akkor küldjük el, amikor online lesz.',
     'sidebar.chat': 'Csevegés',
+    'sidebar.chatOffline': 'Csevegés — az üzeneteket akkor kapja meg, amikor online lesz',
 
     'incomingCall.label': 'Bejövő hívás',
     'friendRequest.label': 'Barátkérés',
