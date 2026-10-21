@@ -17,11 +17,11 @@ jobs:
   release:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # need full history to diff against the previous tag
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -33,16 +33,27 @@ jobs:
       # Release notes = the commit subjects since the last tag. Not GitHub's
       # own PR-based auto-notes, since this repo mostly commits straight to
       # dev rather than going through PRs — that API would come back sparse.
+      #
+      # The previous release is the highest other v* tag by version, not
+      # `git describe`: the v0.1.5 tag sits on a commit a history rewrite left
+      # off main, so describe found no tag at all and 0.1.6's notes listed the
+      # entire project history. And a symmetric range with --cherry-pick
+      # --right-only rather than PREV..HEAD, which drops any commit whose
+      # change already shipped under a different hash — so it works whether or
+      # not the previous tag is an ancestor. Version bumps are left out as noise.
       - name: Generate release notes
         id: notes
         shell: bash
         run: |
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          RANGE="${PREV_TAG:+$PREV_TAG..}HEAD"
+          PREV_TAG=$(git tag --list 'v*' --sort=-v:refname | grep -vxF "$GITHUB_REF_NAME" | head -1)
+          if [ -n "$PREV_TAG" ]; then
+            LOG=$(git log "$PREV_TAG...HEAD" --no-merges --cherry-pick --right-only --pretty=format:"- %s")
+          else
+            LOG=$(git log HEAD --no-merges --pretty=format:"- %s")
+          fi
           {
             echo "notes<<RELEASE_NOTES_EOF"
-            git log "$RANGE" --no-merges --pretty=format:"- %s"
-            echo ""
+            echo "$LOG" | grep -v '^- Bump version' || true
             echo "RELEASE_NOTES_EOF"
           } >> "$GITHUB_OUTPUT"
 
