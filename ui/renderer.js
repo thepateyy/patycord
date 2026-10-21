@@ -792,7 +792,8 @@ function renderCallPanel() {
   // Ourselves first, so it's obvious at a glance whether we're muted.
   if (inCall) {
     const me = document.createElement('div');
-    me.className = 'participant';
+    me.className = 'participant' + (speakingNow.has(SELF) ? ' speaking' : '');
+    me.dataset.peerId = SELF;
     me.innerHTML = `
       <span class="avatarWrap">
         ${avatarHtml(getMyPersistentId(), getMyUsername())}
@@ -806,7 +807,8 @@ function renderCallPanel() {
   for (const [id, entry] of calls) {
     const name = friendName(id);
     const div = document.createElement('div');
-    div.className = 'participant' + (entry.audioEl ? '' : ' dialing');
+    div.className = 'participant' + (entry.audioEl ? '' : ' dialing') + (speakingNow.has(id) ? ' speaking' : '');
+    div.dataset.peerId = id;
     div.innerHTML = `
       ${avatarHtml(id, name)}
       <span class="pname">${escapeHtml(name)}</span>
@@ -829,8 +831,8 @@ function renderCallPanel() {
   if (!inCall && screenStream) stopScreenShare();
 
   if (wasInCall && !inCall) callChatHistory = []; // call chat ends with the call, like it always has
-  if (inCall && !wasInCall) startMic();
-  else if (!inCall && wasInCall) stopMic();
+  if (inCall && !wasInCall) { startMic(); startSpeakingWatch(); }
+  else if (!inCall && wasInCall) { stopMic(); stopSpeakingWatch(); }
   wasInCall = inCall;
   updateChatView();
 }
@@ -871,6 +873,56 @@ function renderEmptyState(inCall) {
       <h2>${t('main.notInCallTitle')}</h2>
       <p>${t('main.notInCall', { dot: '<span class="inlineDot"></span>', phone: `<span class="inlineIcon">${ICONS.phone}</span>` })}</p>`;
   }
+}
+
+// --- who's talking ------------------------------------------------------
+// A green ring around whoever's speaking, ourselves included. Each participant's
+// audio (and our own outgoing audio, via micOut) feeds an AnalyserNode that's
+// read ten times a second, only while we're in a call. A short hold keeps the
+// ring from flickering between words.
+
+const SELF = 'self';
+const SPEAKING_THRESHOLD_DB = -50;
+const SPEAKING_HOLD_MS = 300;
+const speakingAnalysers = new Map(); // peerId (or SELF) -> { analyser, samples }
+const speakingNow = new Set();
+const lastHeardAt = new Map();
+let speakingWatchTimer = null;
+
+function makeAnalyser(sourceNode) {
+  const analyser = sourceNode.context.createAnalyser();
+  analyser.fftSize = 512;
+  sourceNode.connect(analyser);
+  return { analyser, samples: new Float32Array(analyser.fftSize) };
+}
+
+function levelDb({ analyser, samples }) {
+  analyser.getFloatTimeDomainData(samples);
+  let sum = 0;
+  for (const s of samples) sum += s * s;
+  return 20 * Math.log10(Math.sqrt(sum / samples.length) || 1e-6);
+}
+
+function startSpeakingWatch() {
+  if (speakingWatchTimer) return;
+  speakingWatchTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [id, a] of speakingAnalysers) {
+      if (levelDb(a) > SPEAKING_THRESHOLD_DB) lastHeardAt.set(id, now);
+      const speaking = now - (lastHeardAt.get(id) || 0) < SPEAKING_HOLD_MS;
+      if (speaking === speakingNow.has(id)) continue;
+      if (speaking) speakingNow.add(id);
+      else speakingNow.delete(id);
+      callParticipantsEl.querySelector(`.participant[data-peer-id="${CSS.escape(id)}"]`)?.classList.toggle('speaking', speaking);
+    }
+  }, 100);
+}
+
+function stopSpeakingWatch() {
+  clearInterval(speakingWatchTimer);
+  speakingWatchTimer = null;
+  speakingNow.clear();
+  lastHeardAt.clear();
 }
 
 // --- per-participant volume popover -------------------------------
@@ -1002,6 +1054,11 @@ function attachRemoteStream(peerId, stream) {
   audio.autoplay = true;
   const entry = calls.get(peerId) || {};
   entry.audioEl = audio;
+  if (audioCtx) {
+    const source = audioCtx.createMediaStreamSource(stream);
+    speakingAnalysers.set(peerId, makeAnalyser(source));
+    entry.analyserSource = source;
+  }
   calls.set(peerId, entry);
   updateOutgoingRingState();
   renderPeerList();
@@ -1024,6 +1081,9 @@ function removeCall(peerId) {
   if (entry && entry.audioEl) {
     entry.audioEl.srcObject = null;
   }
+  entry?.analyserSource?.disconnect();
+  speakingAnalysers.delete(peerId);
+  speakingNow.delete(peerId);
   calls.delete(peerId);
   updateOutgoingRingState();
   renderPeerList();
@@ -1798,6 +1858,7 @@ let rnnoiseEnabled = true; // the setting; whether it's actually running is rnno
 let rnnoiseReady = false; // WASM loaded into the worklet
 let audioCtx = null;
 let micDest = null; // MediaStreamAudioDestinationNode whose stream is processedStream
+let micOut = null; // everything bound for micDest goes through here — see buildProcessedStream
 let noiseNode = null; // the AudioWorkletNode, once loaded (first call)
 let noiseNodeLoading = null;
 let micSourceNode = null;
@@ -1806,6 +1867,11 @@ let micStarting = null;
 function buildProcessedStream() {
   audioCtx = new AudioContext({ sampleRate: 48000 }); // RNNoise works on 48 kHz frames
   micDest = audioCtx.createMediaStreamDestination();
+  // Tapped by the speaking indicator, so ours lights up for what others actually
+  // hear: after noise suppression, and never while muted.
+  micOut = audioCtx.createGain();
+  micOut.connect(micDest);
+  speakingAnalysers.set(SELF, makeAnalyser(micOut));
   audioCtx.suspend().catch(() => {}); // idle until a call starts — see startMic
   return micDest.stream;
 }
@@ -1824,7 +1890,7 @@ function ensureNoiseNode() {
           numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
           channelCount: 1, channelCountMode: 'explicit',
         });
-        noiseNode.connect(micDest);
+        noiseNode.connect(micOut);
         noiseNode.port.postMessage({ type: 'muted', value: !isTransmitting() });
         noiseNode.port.postMessage({ type: 'enabled', value: rnnoiseEnabled });
         await ensureRnnoise();
@@ -1994,7 +2060,7 @@ function startMic() {
       localStream = stream;
       applyTransmitState();
       micSourceNode = audioCtx.createMediaStreamSource(stream);
-      micSourceNode.connect(noiseNode || micDest);
+      micSourceNode.connect(noiseNode || micOut);
       await audioCtx.resume();
     } catch (err) {
       toast(t('toast.micFailed', { error: err.message }));
