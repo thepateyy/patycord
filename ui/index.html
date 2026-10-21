@@ -493,6 +493,21 @@
                 <span class="switchTrack"><span class="switchKnob"></span></span>
               </label>
             </div>
+
+            <div class="switchRow" style="margin-top:16px;">
+              <span class="switchLabel">
+                <span data-i18n="settings.pushToTalk">Push to talk</span>
+                <small data-i18n="settings.pushToTalkDesc">Your mic only goes out while you hold the key — works while you're in a game too</small>
+              </span>
+              <label class="switch">
+                <input type="checkbox" id="pttToggle">
+                <span class="switchTrack"><span class="switchKnob"></span></span>
+              </label>
+            </div>
+            <div class="row" id="pttKeyRow" style="margin-top:8px;" hidden>
+              <span class="hint" style="margin:0; flex:1;" data-i18n="settings.pttKey">Key</span>
+              <button id="pttKeyBtn" class="secondary"></button>
+            </div>
           </div>
 
           <div class="settingsPane" data-pane="privacy" hidden>

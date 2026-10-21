@@ -16,6 +16,9 @@ const micSelectEl = document.getElementById('micSelect');
 const micMeterFillEl = document.getElementById('micMeterFill');
 const speakerSelectEl = document.getElementById('speakerSelect');
 const speakerTestBtn = document.getElementById('speakerTestBtn');
+const pttToggle = document.getElementById('pttToggle');
+const pttKeyRow = document.getElementById('pttKeyRow');
+const pttKeyBtn = document.getElementById('pttKeyBtn');
 const languageSelectEl = document.getElementById('languageSelect');
 const usernameModal = document.getElementById('usernameModal');
 const usernameInput = document.getElementById('usernameInput');
@@ -800,7 +803,7 @@ function renderCallPanel() {
         ${muted ? `<span class="mutedBadge" title="${t('main.muted')}">${ICONS.micOff}</span>` : ''}
       </span>
       <span class="pname">${escapeHtml(getMyUsername())}</span>
-      <span class="pname sub">${muted ? t('main.muted') : t('main.you')}</span>`;
+      <span class="pname sub">${muted ? t('main.muted') : pushToTalkActive() ? t('main.pttHint', { key: escapeHtml(getPttKey().label) }) : t('main.you')}</span>`;
     callParticipantsEl.appendChild(me);
   }
 
@@ -831,8 +834,8 @@ function renderCallPanel() {
   if (!inCall && screenStream) stopScreenShare();
 
   if (wasInCall && !inCall) callChatHistory = []; // call chat ends with the call, like it always has
-  if (inCall && !wasInCall) { startMic(); startSpeakingWatch(); }
-  else if (!inCall && wasInCall) { stopMic(); stopSpeakingWatch(); }
+  if (inCall && !wasInCall) { startMic(); startSpeakingWatch(); syncPushToTalk(); }
+  else if (!inCall && wasInCall) { stopMic(); stopSpeakingWatch(); syncPushToTalk(); }
   wasInCall = inCall;
   updateChatView();
 }
@@ -2081,7 +2084,101 @@ function stopMic() {
 
 // Whether our mic should actually be going out right now.
 function isTransmitting() {
-  return !muted;
+  return !muted && (!pushToTalkActive() || pttHeld);
+}
+
+// --- push to talk ------------------------------------------------------
+// With it on, the mic only goes out while the chosen key or mouse button is
+// held. lib.rs watches the key system-wide (so it works with a game focused)
+// and only while we tell it to: during a call, with push-to-talk on.
+
+let pttHeld = false;
+let pttCapturing = false;
+
+function getPttEnabled() {
+  return localStorage.getItem('patycord.pttEnabled') === 'on';
+}
+
+function getPttKey() {
+  try { return JSON.parse(localStorage.getItem('patycord.pttKey')); } catch { return null; } // { vk, label }
+}
+
+function pushToTalkActive() {
+  return getPttEnabled() && !!getPttKey();
+}
+
+function syncPushToTalk() {
+  const watching = pushToTalkActive() && calls.size > 0;
+  window.__TAURI__?.core?.invoke('set_push_to_talk_key', { vk: watching ? getPttKey().vk : 0 }).catch(() => {});
+  if (!watching) pttHeld = false;
+  applyTransmitState();
+}
+
+function setPttHeld(held) {
+  if (held === pttHeld) return;
+  pttHeld = held;
+  applyTransmitState();
+}
+
+function renderPttSettings() {
+  pttToggle.checked = getPttEnabled();
+  pttKeyRow.hidden = !getPttEnabled();
+  pttKeyBtn.textContent = pttCapturing ? t('settings.pttPressKey') : getPttKey()?.label || t('settings.pttNoKey');
+}
+
+// Windows virtual-key codes for the mouse buttons worth binding (not left/right).
+const MOUSE_BUTTON_VK = { 1: [0x04, 'Mouse 3'], 3: [0x05, 'Mouse 4'], 4: [0x06, 'Mouse 5'] };
+
+function keyLabel(e) {
+  if (/^Key[A-Z]$/.test(e.code)) return e.code.slice(3);
+  if (/^Digitd$/.test(e.code)) return e.code.slice(5);
+  if (/^Numpad/.test(e.code)) return 'Num ' + e.code.slice(6);
+  return e.key.length === 1 ? e.key.toUpperCase() : e.code || e.key;
+}
+
+function finishPttCapture(key) {
+  pttCapturing = false;
+  if (key) localStorage.setItem('patycord.pttKey', JSON.stringify(key));
+  renderPttSettings();
+  syncPushToTalk();
+}
+
+// Capture phase, so Esc cancels the capture rather than also closing Settings.
+window.addEventListener('keydown', (e) => {
+  if (!pttCapturing) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  // keyCode is deprecated, but on Windows it's exactly the virtual-key code
+  // GetAsyncKeyState wants, layout-independent.
+  finishPttCapture(e.key === 'Escape' ? null : { vk: e.keyCode, label: keyLabel(e) });
+}, true);
+window.addEventListener('mousedown', (e) => {
+  if (!pttCapturing || !MOUSE_BUTTON_VK[e.button]) return;
+  e.preventDefault();
+  const [vk, label] = MOUSE_BUTTON_VK[e.button];
+  finishPttCapture({ vk, label });
+}, true);
+
+pttToggle.addEventListener('change', () => {
+  localStorage.setItem('patycord.pttEnabled', pttToggle.checked ? 'on' : 'off');
+  pttCapturing = pttToggle.checked && !getPttKey(); // turning it on with no key yet: ask for one straight away
+  renderPttSettings();
+  syncPushToTalk();
+  renderCallPanel();
+});
+pttKeyBtn.addEventListener('click', () => {
+  pttCapturing = true;
+  renderPttSettings();
+});
+
+window.__TAURI__?.event?.listen('ptt-changed', (event) => setPttHeld(event.payload === true));
+
+// Outside the Tauri app (browser testing) there's no system-wide watcher, so
+// fall back to the key while this page has focus.
+if (!window.__TAURI__) {
+  const matches = (vk) => pushToTalkActive() && calls.size > 0 && vk === getPttKey().vk;
+  window.addEventListener('keydown', (e) => { if (!pttCapturing && matches(e.keyCode)) setPttHeld(true); });
+  window.addEventListener('keyup', (e) => { if (matches(e.keyCode)) setPttHeld(false); });
 }
 
 // Pushes isTransmitting() to both the mic track and the worklet (which then
@@ -2219,6 +2316,8 @@ myIdEl.addEventListener('click', () => copyMyId(copyBtn, () => t('settings.copy'
 settingsBtn.addEventListener('click', () => {
   settingsNameInput.value = getMyUsername();
   noiseSuppressionToggle.checked = getNoiseSuppressionEnabled();
+  pttCapturing = false;
+  renderPttSettings();
   shareActivityToggle.checked = getShareActivityEnabled();
   friendsOnlyCallsToggle.checked = getFriendsOnlyCalls();
   settingsModal.hidden = false;

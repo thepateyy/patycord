@@ -162,6 +162,59 @@ fn detect_running_game() -> Option<String> {
     games.get(&exe).cloned()
 }
 
+// Push-to-talk: watches one key (or mouse button) system-wide and emits
+// "ptt-changed" with whether it's held. Reads the key's state with
+// GetAsyncKeyState rather than registering a global hotkey — RegisterHotKey would
+// swallow the key, so a push-to-talk key bound to something a game also uses
+// would stop working in the game. Only polls while the frontend has set a key,
+// which it does only during a call with push-to-talk on; otherwise the thread is
+// parked and costs nothing.
+#[cfg(target_os = "windows")]
+mod push_to_talk {
+    use std::sync::atomic::{AtomicU16, Ordering};
+    use std::sync::OnceLock;
+    use tauri::Emitter;
+
+    static KEY: AtomicU16 = AtomicU16::new(0); // Windows virtual-key code; 0 = off
+    static THREAD: OnceLock<std::thread::Thread> = OnceLock::new();
+
+    pub fn start(app: tauri::AppHandle) {
+        let handle = std::thread::spawn(move || {
+            use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+            let mut held = false;
+            loop {
+                let vk = KEY.load(Ordering::Relaxed);
+                let now_held = vk != 0 && unsafe { GetAsyncKeyState(vk as i32) } < 0; // high bit = currently down
+                if now_held != held {
+                    held = now_held;
+                    let _ = app.emit("ptt-changed", held);
+                }
+                if vk == 0 {
+                    std::thread::park(); // until set_push_to_talk_key wakes us
+                } else {
+                    std::thread::sleep(std::time::Duration::from_millis(15));
+                }
+            }
+        });
+        let _ = THREAD.set(handle.thread().clone());
+    }
+
+    pub fn set_key(vk: u16) {
+        KEY.store(vk, Ordering::Relaxed);
+        if let Some(thread) = THREAD.get() {
+            thread.unpark();
+        }
+    }
+}
+
+#[tauri::command]
+fn set_push_to_talk_key(vk: u16) {
+    #[cfg(target_os = "windows")]
+    push_to_talk::set_key(vk);
+    #[cfg(not(target_os = "windows"))]
+    let _ = vk;
+}
+
 // A single encrypted-at-rest blob (one JSON object holding friends, chat history,
 // pending messages, persistent ID — everything the frontend used to keep in plain
 // localStorage) instead of per-key values, so there's one load and one save call
@@ -424,7 +477,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             secure_store::load_secure_store,
             secure_store::save_secure_store,
-            set_activity_detection
+            set_activity_detection,
+            set_push_to_talk_key
         ])
         .setup(|_app| {
             #[cfg(target_os = "windows")]
@@ -432,6 +486,7 @@ pub fn run() {
                 use tauri::{Emitter, Manager};
                 let window = _app.get_webview_window("main").expect("no main window");
                 allow_mic_permission(&window);
+                push_to_talk::start(_app.handle().clone());
 
                 let app_handle = _app.handle().clone();
                 std::thread::spawn(move || {

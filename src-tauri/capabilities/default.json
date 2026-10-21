@@ -10,6 +10,7 @@
     "process:allow-restart",
     "allow-load-secure-store",
     "allow-save-secure-store",
-    "allow-set-activity-detection"
+    "allow-set-activity-detection",
+    "allow-set-push-to-talk-key"
   ]
 }
