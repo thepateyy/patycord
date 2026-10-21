@@ -1,4 +1,3 @@
-import createRNNWasmModule from './rnnoise.js';
 import { t, getLanguage, setLanguage, applyStaticTranslations, LANGUAGES } from './i18n.js';
 
 const myIdEl = document.getElementById('myId');
@@ -308,13 +307,13 @@ function getNoiseSuppressionEnabled() {
 function setNoiseSuppressionEnabled(enabled) {
   localStorage.setItem('patycord.noiseSuppression', enabled ? 'on' : 'off');
   rnnoiseEnabled = enabled;
-  // RNNoise follows rnnoiseEnabled live once it's loaded; otherwise there's only
-  // anything to change if the mic is open right now (mid-call). Turning it on then
-  // loads RNNoise on the spot — micConstraints falls back to the browser's own
-  // built-in suppression if that fails, same as when it's switched off.
-  if (rnnoiseModule || !localStream) return;
+  noiseNode?.port.postMessage({ type: 'enabled', value: enabled });
+  // Turned on mid-call before RNNoise was ever needed: load it now. Either way
+  // re-apply the browser's own suppression, which micConstraints only uses when
+  // RNNoise isn't running.
+  if (!localStream) return;
   const applyToMic = () => localStream?.getAudioTracks()[0]?.applyConstraints(micConstraints().audio).catch(() => {});
-  if (enabled) loadRNNoise().then(applyToMic);
+  if (enabled) ensureRnnoise().then(applyToMic);
   else applyToMic();
 }
 
@@ -1777,178 +1776,106 @@ function stopScreenShare() {
   log(t('log.stoppedSharing'));
 }
 
-// --- RNNoise (open-source ML noise suppression, runs locally, no account needed) ---
+// --- mic pipeline ---------------------------------------------------------
+// mic -> RNNoise AudioWorklet (see rnnoise-worklet.js) -> MediaStream that goes
+// out over WebRTC. The output stream exists for the whole session, so calls can
+// be handed it before the mic is even open; the mic itself is only plugged in
+// while we're in a call (startMic/stopMic), and the graph is suspended between
+// calls. Holding the mic the rest of the time would keep Windows' "using your
+// microphone" indicator on and the capture/echo-cancellation pipeline running
+// for nothing.
 
-const RNNOISE_FRAME_SIZE = 480; // required by RNNoise, at 48kHz
-let rnnoiseModule = null;
-let rnnoiseState = 0;
-let rnnoiseInPtr = 0;
-let rnnoiseOutPtr = 0;
-let rnnoiseEnabled = true;
+let rnnoiseEnabled = true; // the setting; whether it's actually running is rnnoiseReady
+let rnnoiseReady = false; // WASM loaded into the worklet
 let audioCtx = null;
-let scriptProcessorNode = null; // held onto so it isn't garbage-collected mid-call
+let micDest = null; // MediaStreamAudioDestinationNode whose stream is processedStream
+let noiseNode = null; // the AudioWorkletNode, once loaded (first call)
+let noiseNodeLoading = null;
+let micSourceNode = null;
+let micStarting = null;
 
-async function loadRNNoise() {
-  if (rnnoiseModule) return rnnoiseModule;
-  try {
-    rnnoiseModule = await createRNNWasmModule();
-    rnnoiseState = rnnoiseModule._rnnoise_create(0);
-    const bytes = RNNOISE_FRAME_SIZE * 4;
-    rnnoiseInPtr = rnnoiseModule._malloc(bytes);
-    rnnoiseOutPtr = rnnoiseModule._malloc(bytes);
-  } catch (err) {
-    log(t('log.rnnoiseFailed', { error: err.message }));
-    rnnoiseModule = null;
-  }
-  return rnnoiseModule;
-}
-
-// frameIn/frameOut: Float32Array(480), samples in [-1, 1] — RNNoise itself expects
-// roughly int16-scale values, hence the *32768 / /32768 around the actual call.
-function processFrameRNNoise(frameIn, frameOut) {
-  const m = rnnoiseModule;
-  for (let i = 0; i < RNNOISE_FRAME_SIZE; i++) m.HEAPF32[rnnoiseInPtr / 4 + i] = frameIn[i] * 32768;
-  m._rnnoise_process_frame(rnnoiseState, rnnoiseOutPtr, rnnoiseInPtr);
-  for (let i = 0; i < RNNOISE_FRAME_SIZE; i++) frameOut[i] = m.HEAPF32[rnnoiseOutPtr / 4 + i] / 32768;
-}
-
-// Fixed-capacity circular buffer of samples. The naive way to buffer a stream of
-// irregularly-sized chunks is "concat onto a growing array", which reallocates
-// and copies the whole thing on every single chunk — wasteful GC churn in an
-// audio callback that fires ten-plus times a second for as long as a call lasts.
-// This allocates once and never again.
-class RingBuffer {
-  constructor(capacity) {
-    this.buf = new Float32Array(capacity);
-    this.capacity = capacity;
-    this.readIdx = 0;
-    this.length = 0; // samples currently buffered
-  }
-  clear() {
-    this.readIdx = 0;
-    this.length = 0;
-  }
-  write(chunk) {
-    for (let i = 0; i < chunk.length; i++) {
-      this.buf[(this.readIdx + this.length) % this.capacity] = chunk[i];
-      this.length++;
-    }
-  }
-  // Fills `dest` (its full length) with the oldest buffered samples and removes
-  // them. Caller checks .length beforehand — this doesn't guard against underrun.
-  read(dest) {
-    for (let i = 0; i < dest.length; i++) {
-      dest[i] = this.buf[this.readIdx];
-      this.readIdx = (this.readIdx + 1) % this.capacity;
-    }
-    this.length -= dest.length;
-  }
-}
-
-// Builds the Web Audio graph the mic runs through on its way out — RNNoise when
-// enabled, a straight passthrough otherwise — and returns the MediaStream it
-// produces, which is what actually goes out over WebRTC. Built once and kept for
-// the whole session, so calls can be handed this stream before the mic itself is
-// even open; startMic/stopMic plug the mic in and out of it and pause the graph
-// between calls. Uses ScriptProcessorNode (deprecated but universally supported,
-// and simpler than an AudioWorklet for this scale) with internal ring buffers,
-// since RNNoise needs exactly 480-sample frames regardless of the browser's own
-// audio callback chunk size.
 function buildProcessedStream() {
-  audioCtx = new AudioContext({ sampleRate: 48000 });
-  const processor = audioCtx.createScriptProcessor(4096, 1, 1);
-
-  // 3x the callback size is comfortable headroom over the worst-case backlog
-  // (well under 2x in practice) with input/output running at the same rate —
-  // this is never expected to fill up, let alone overflow.
-  const RING_CAPACITY = 4096 * 3;
-  const inputRing = new RingBuffer(RING_CAPACITY);
-  const outputRing = new RingBuffer(RING_CAPACITY);
-  const frameIn = new Float32Array(RNNOISE_FRAME_SIZE);
-  const frameOut = new Float32Array(RNNOISE_FRAME_SIZE);
-
-  processor.onaudioprocess = (e) => {
-    const input = e.inputBuffer.getChannelData(0);
-    const output = e.outputBuffer.getChannelData(0);
-
-    if (audioBuffersStale) {
-      // Leftovers from the previous call — don't open the next one with them.
-      inputRing.clear();
-      outputRing.clear();
-      audioBuffersStale = false;
-    }
-    if (muted) {
-      // The muted track only delivers silence — nothing worth denoising.
-      output.fill(0);
-      return;
-    }
-    if (!rnnoiseEnabled || !rnnoiseModule) {
-      output.set(input);
-      return;
-    }
-
-    inputRing.write(input);
-    while (inputRing.length >= RNNOISE_FRAME_SIZE) {
-      inputRing.read(frameIn);
-      processFrameRNNoise(frameIn, frameOut);
-      outputRing.write(frameOut);
-    }
-
-    if (outputRing.length >= output.length) {
-      outputRing.read(output);
-    } else {
-      // Brief startup underrun — take what's there and leave the rest silent
-      // rather than noise. Reading straight into a view over the front of
-      // `output` avoids a separate temporary buffer.
-      const available = outputRing.length;
-      outputRing.read(output.subarray(0, available));
-      output.fill(0, available);
-    }
-  };
-
-  scriptProcessorNode = processor;
-  const dest = audioCtx.createMediaStreamDestination();
-  processor.connect(dest);
+  audioCtx = new AudioContext({ sampleRate: 48000 }); // RNNoise works on 48 kHz frames
+  micDest = audioCtx.createMediaStreamDestination();
   audioCtx.suspend().catch(() => {}); // idle until a call starts — see startMic
-  return dest.stream;
+  return micDest.stream;
+}
+
+// Loads the worklet (once) and, if suppression is on, RNNoise into it — on the
+// first call rather than at startup, since the WASM module reserves 16 MB. If
+// the worklet can't load at all, the mic is wired straight to the output
+// instead and the browser's built-in suppression covers for it (micConstraints).
+function ensureNoiseNode() {
+  if (noiseNode) return ensureRnnoise();
+  if (!noiseNodeLoading) {
+    noiseNodeLoading = (async () => {
+      try {
+        await audioCtx.audioWorklet.addModule('rnnoise-worklet.js');
+        noiseNode = new AudioWorkletNode(audioCtx, 'rnnoise', {
+          numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+          channelCount: 1, channelCountMode: 'explicit',
+        });
+        noiseNode.connect(micDest);
+        noiseNode.port.postMessage({ type: 'muted', value: !isTransmitting() });
+        noiseNode.port.postMessage({ type: 'enabled', value: rnnoiseEnabled });
+        await ensureRnnoise();
+      } catch (err) {
+        log(t('log.rnnoiseFailed', { error: err.message || err }));
+      }
+    })();
+  }
+  return noiseNodeLoading;
+}
+
+let rnnoiseLoading = null;
+function ensureRnnoise() {
+  if (!noiseNode || !rnnoiseEnabled || rnnoiseReady) return Promise.resolve();
+  if (!rnnoiseLoading) {
+    rnnoiseLoading = (async () => {
+      try {
+        const bytes = await (await fetch('rnnoise.wasm')).arrayBuffer();
+        const reply = new Promise((resolve) => {
+          noiseNode.port.onmessage = (e) => resolve(e.data);
+        });
+        noiseNode.port.postMessage({ type: 'wasm', bytes }, [bytes]);
+        const result = await reply;
+        if (result.type !== 'ready') throw new Error(result.error);
+        rnnoiseReady = true;
+        log(t('log.rnnoiseActive'));
+      } catch (err) {
+        log(t('log.rnnoiseFailed', { error: err.message || err }));
+      } finally {
+        rnnoiseLoading = null;
+      }
+    })();
+  }
+  return rnnoiseLoading;
 }
 
 function micConstraints() {
   // With RNNoise doing the denoising, the browser's own suppression on top would
   // just double-process the same audio through two different denoisers.
-  const builtInSuppression = rnnoiseModule ? false : getNoiseSuppressionEnabled();
+  const builtInSuppression = rnnoiseReady ? false : getNoiseSuppressionEnabled();
   return {
     audio: { noiseSuppression: builtInSuppression, voiceIsolation: builtInSuppression, echoCancellation: true, autoGainControl: true },
     video: false,
   };
 }
 
-// The mic is only actually open while we're in a call: holding it the rest of the
-// time keeps Windows' "using your microphone" indicator on and the capture and
-// echo-cancellation pipeline running for nothing. Opened (and RNNoise loaded, the
-// first time — its WASM module reserves 16 MB up front) when a call starts, and
-// released again when the last one ends; see renderCallPanel.
-let micSourceNode = null;
-let micStarting = null;
-let audioBuffersStale = false;
-
 function startMic() {
   if (localStream || micStarting) return;
   micStarting = (async () => {
     try {
-      if (rnnoiseEnabled && !rnnoiseModule) {
-        await loadRNNoise();
-        if (rnnoiseModule) log(t('log.rnnoiseActive'));
-      }
+      await ensureNoiseNode();
       const stream = await navigator.mediaDevices.getUserMedia(micConstraints());
       if (calls.size === 0) { // the call already ended while we were waiting on the mic
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
-      stream.getAudioTracks().forEach((track) => (track.enabled = !muted));
       localStream = stream;
+      applyTransmitState();
       micSourceNode = audioCtx.createMediaStreamSource(stream);
-      micSourceNode.connect(scriptProcessorNode);
+      micSourceNode.connect(noiseNode || micDest);
       await audioCtx.resume();
     } catch (err) {
       toast(t('toast.micFailed', { error: err.message }));
@@ -1963,8 +1890,21 @@ function stopMic() {
   localStream = null;
   micSourceNode?.disconnect();
   micSourceNode = null;
-  audioBuffersStale = true;
+  noiseNode?.port.postMessage({ type: 'reset' }); // don't open the next call with the tail end of this one
   audioCtx?.suspend().catch(() => {});
+}
+
+// Whether our mic should actually be going out right now.
+function isTransmitting() {
+  return !muted;
+}
+
+// Pushes isTransmitting() to both the mic track and the worklet (which then
+// skips denoising silence entirely).
+function applyTransmitState() {
+  const on = isTransmitting();
+  localStream?.getAudioTracks().forEach((track) => (track.enabled = on));
+  noiseNode?.port.postMessage({ type: 'muted', value: !on });
 }
 
 // Run once at launch, only to find out whether there's a usable mic at all — so a
@@ -2181,7 +2121,7 @@ chatCloseBtn.addEventListener('click', closeChat);
 
 muteBtn.addEventListener('click', () => {
   muted = !muted;
-  localStream?.getAudioTracks().forEach((track) => (track.enabled = !muted)); // startMic applies it too, if the mic isn't open yet
+  applyTransmitState(); // startMic applies it too, if the mic isn't open yet
   muteBtn.title = muted ? t('main.unmute') : t('main.mute');
   muteBtn.classList.toggle('active', muted);
   muteBtn.innerHTML = muted ? ICONS.micOff : ICONS.mic;
