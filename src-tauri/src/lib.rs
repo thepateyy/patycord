@@ -469,18 +469,111 @@ mod secure_store {
     }
 }
 
+// --- tray --------------------------------------------------------------
+// Everything in patycord is peer-to-peer, so you're only reachable while it's
+// running: closing the window hides it to the tray instead of quitting (unless
+// turned off in settings), and Quit lives in the tray icon's menu.
+
+static CLOSE_TO_TRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+// Passed by the start-with-Windows entry, so a launch at sign-in goes straight to the tray.
+const STARTED_HIDDEN_ARG: &str = "--hidden";
+
+#[tauri::command]
+fn set_close_to_tray(enabled: bool) {
+    CLOSE_TO_TRAY.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn show_main_window(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+// The menu's items, kept so the frontend can relabel them in the current language.
+struct TrayMenu {
+    open: tauri::menu::MenuItem<tauri::Wry>,
+    quit: tauri::menu::MenuItem<tauri::Wry>,
+}
+
+fn create_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    use tauri::Manager;
+
+    let open = MenuItem::with_id(app, "open", "Open patycord", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit patycord", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &quit])?;
+    let mut tray = TrayIconBuilder::with_id("main")
+        .tooltip("patycord")
+        .menu(&menu)
+        .show_menu_on_left_click(false) // left click opens the window; the menu is on right click
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => show_main_window(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    app.manage(TrayMenu { open, quit });
+    Ok(())
+}
+
+#[tauri::command]
+fn set_tray_labels(menu: tauri::State<'_, TrayMenu>, open: String, quit: String) {
+    let _ = menu.open.set_text(open);
+    let _ = menu.quit.set_text(quit);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Must be registered first. A second launch (from the Start menu, say, while
+        // we're sitting in the tray) would otherwise start another copy under the
+        // same peer ID, which the signaling server rejects — instead it just brings
+        // this one back.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main_window(app)))
+        .plugin(tauri_plugin_autostart::Builder::new().arg(STARTED_HIDDEN_ARG).build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             secure_store::load_secure_store,
             secure_store::save_secure_store,
             set_activity_detection,
-            set_push_to_talk_key
+            set_push_to_talk_key,
+            set_close_to_tray,
+            set_tray_labels
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if CLOSE_TO_TRAY.load(std::sync::atomic::Ordering::Relaxed) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(|_app| {
+            create_tray(_app)?;
+            {
+                use tauri::Manager;
+                // The window starts hidden (tauri.conf.json) so a launch at sign-in
+                // never flashes it up before going to the tray.
+                if !std::env::args().any(|arg| arg == STARTED_HIDDEN_ARG) {
+                    if let Some(window) = _app.get_webview_window("main") {
+                        let _ = window.show();
+                    }
+                }
+            }
             #[cfg(target_os = "windows")]
             {
                 use tauri::{Emitter, Manager};

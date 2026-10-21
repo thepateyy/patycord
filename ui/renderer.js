@@ -17,6 +17,8 @@ const micMeterFillEl = document.getElementById('micMeterFill');
 const speakerSelectEl = document.getElementById('speakerSelect');
 const speakerTestBtn = document.getElementById('speakerTestBtn');
 const pttToggle = document.getElementById('pttToggle');
+const closeToTrayToggle = document.getElementById('closeToTrayToggle');
+const startWithWindowsToggle = document.getElementById('startWithWindowsToggle');
 const pttKeyRow = document.getElementById('pttKeyRow');
 const pttKeyBtn = document.getElementById('pttKeyBtn');
 const languageSelectEl = document.getElementById('languageSelect');
@@ -293,6 +295,25 @@ function setShareActivityEnabled(enabled) {
   localStorage.setItem('patycord.shareActivity', enabled ? 'on' : 'off');
   syncActivityDetection();
   broadcastActivity(); // tell anyone already connected right away, rather than waiting for it to next change
+}
+
+// Rejects outside the Tauri app (browser testing), like a failed command would.
+function tauriInvoke(cmd, args) {
+  const invoke = window.__TAURI__?.core?.invoke;
+  return invoke ? invoke(cmd, args) : Promise.reject(new Error('not running in the app'));
+}
+
+// --- tray ------------------------------------------------------------------
+// Closing the window hides it to the tray (lib.rs) unless this is off — you're
+// only reachable while patycord runs. On by default.
+
+function getCloseToTray() {
+  return localStorage.getItem('patycord.closeToTray') !== 'off';
+}
+
+function syncTraySettings() {
+  tauriInvoke('set_close_to_tray', { enabled: getCloseToTray() }).catch(() => {});
+  tauriInvoke('set_tray_labels', { open: t('tray.open'), quit: t('tray.quit') }).catch(() => {});
 }
 
 // The Rust side only scans running processes while sharing is on — see
@@ -2318,6 +2339,9 @@ settingsBtn.addEventListener('click', () => {
   noiseSuppressionToggle.checked = getNoiseSuppressionEnabled();
   pttCapturing = false;
   renderPttSettings();
+  closeToTrayToggle.checked = getCloseToTray();
+  // The registry entry is the source of truth — it can also be removed from Task Manager's Startup tab.
+  tauriInvoke('plugin:autostart|is_enabled').then((on) => { startWithWindowsToggle.checked = !!on; }).catch(() => {});
   shareActivityToggle.checked = getShareActivityEnabled();
   friendsOnlyCallsToggle.checked = getFriendsOnlyCalls();
   settingsModal.hidden = false;
@@ -2367,6 +2391,18 @@ shareActivityToggle.addEventListener('change', () => {
 friendsOnlyCallsToggle.addEventListener('change', () => {
   setFriendsOnlyCalls(friendsOnlyCallsToggle.checked);
 });
+closeToTrayToggle.addEventListener('change', () => {
+  localStorage.setItem('patycord.closeToTray', closeToTrayToggle.checked ? 'on' : 'off');
+  syncTraySettings();
+});
+startWithWindowsToggle.addEventListener('change', async () => {
+  try {
+    await tauriInvoke(startWithWindowsToggle.checked ? 'plugin:autostart|enable' : 'plugin:autostart|disable');
+  } catch (err) {
+    log(`start with Windows: ${err.message || err}`);
+  }
+  startWithWindowsToggle.checked = !!(await tauriInvoke('plugin:autostart|is_enabled').catch(() => false)); // show what actually stuck
+});
 settingsSaveNameBtn.addEventListener('click', () => {
   const name = settingsNameInput.value.trim();
   if (!name) return;
@@ -2413,6 +2449,7 @@ function applyLanguage() {
   if (openChatPeerId === null && calls.size > 0) chatMessagesEl.dataset.empty = t('chat.emptyCall');
   else chatMessagesEl.dataset.empty = t('chat.emptyDm');
   emptyStateVariant = null; // force renderEmptyState (via renderPeerList below) to rebuild in the new language
+  syncTraySettings(); // relabels the tray menu
   renderMyActivity();
   renderPeerList();
   renderIncomingCalls();
@@ -2577,6 +2614,7 @@ async function init() {
   // the real Tauri app, never in a plain browser. We just relay whatever it says to
   // friends; see lib.rs for the actual detection against src-tauri/game-names.json.
   syncActivityDetection(); // the Rust side starts with detection off until told otherwise
+  syncTraySettings();
   window.__TAURI__?.event?.listen('active-app-changed', (event) => {
     myActivity = typeof event.payload === 'string' ? event.payload : null;
     renderMyActivity();

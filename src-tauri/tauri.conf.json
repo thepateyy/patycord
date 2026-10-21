@@ -15,7 +15,9 @@
         "height": 600,
         "minWidth": 760,
         "minHeight": 420,
-        "resizable": true
+        "resizable": true,
+        "visible": false,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,IntensiveWakeUpThrottling --disable-background-timer-throttling --autoplay-policy=no-user-gesture-required"
       }
     ],
     "security": {

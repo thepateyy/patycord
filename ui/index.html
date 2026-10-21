@@ -457,6 +457,7 @@
           <button class="settingsTabBtn active" data-tab="account" data-i18n="settings.tabAccount">Account</button>
           <button class="settingsTabBtn" data-tab="audio" data-i18n="settings.audio">Audio</button>
           <button class="settingsTabBtn" data-tab="privacy" data-i18n="settings.privacy">Privacy</button>
+          <button class="settingsTabBtn" data-tab="app" data-i18n="settings.tabApp">App</button>
           <button class="settingsTabBtn" data-tab="language" data-i18n="settings.language">Language</button>
           <div id="appVersion" class="appVersion"></div>
         </div>
@@ -528,6 +529,29 @@
               </span>
               <label class="switch">
                 <input type="checkbox" id="friendsOnlyCallsToggle">
+                <span class="switchTrack"><span class="switchKnob"></span></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="settingsPane" data-pane="app" hidden>
+            <div class="switchRow">
+              <span class="switchLabel">
+                <span data-i18n="settings.closeToTray">Keep running in the tray when closed</span>
+                <small data-i18n="settings.closeToTrayDesc">So friends can still call and message you. Quit from the tray icon.</small>
+              </span>
+              <label class="switch">
+                <input type="checkbox" id="closeToTrayToggle">
+                <span class="switchTrack"><span class="switchKnob"></span></span>
+              </label>
+            </div>
+            <div class="switchRow" style="margin-top:16px;">
+              <span class="switchLabel">
+                <span data-i18n="settings.startWithWindows">Start with Windows</span>
+                <small data-i18n="settings.startWithWindowsDesc">Starts in the tray when you sign in, so you're reachable without opening it</small>
+              </span>
+              <label class="switch">
+                <input type="checkbox" id="startWithWindowsToggle">
                 <span class="switchTrack"><span class="switchKnob"></span></span>
               </label>
             </div>
