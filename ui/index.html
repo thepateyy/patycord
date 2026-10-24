@@ -11,12 +11,24 @@
     --border: #2b3760;
     --text: #eef1fb;
     --text-muted: #8892b8;
+    --text-faint: #5d6687;
     --accent: #3f7ff5;
     --accent-hover: #2f68d9;
+    --accent-glow: rgba(63,127,245,0.22);
     --success: #2fb673;
     --danger: #e6555f;
+    --warning: #f0b232;
     --radius: 12px;
     --radius-sm: 8px;
+    /* the three Discord-style surfaces, darkest to lightest */
+    --rail: #070b15;
+    --side: #0e1424;
+    --main-bg: #121a2e;
+    --input: #0a0f1d;
+    --hover: rgba(136,146,184,0.09);
+    --active: rgba(136,146,184,0.17);
+    --divider: rgba(136,146,184,0.12);
+    --header-shadow: 0 1px 0 rgba(0,0,0,0.35), 0 2px 8px rgba(0,0,0,0.18);
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -31,39 +43,17 @@
   ::-webkit-scrollbar-thumb { background: var(--bg-elev-2); border-radius: 8px; }
   ::-webkit-scrollbar-track { background: transparent; }
 
-  .app { display: flex; height: 100vh; }
-
-  .sidebar {
-    width: 250px; flex-shrink: 0; background: var(--bg-elev); border-right: 1px solid var(--border);
-    display: flex; flex-direction: column; padding: 14px; gap: 12px; overflow-y: auto;
-  }
-  .main {
-    flex: 1; min-width: 0; display: flex; flex-direction: column;
-    background: radial-gradient(circle at 85% -10%, rgba(63,127,245,0.14), transparent 45%), var(--bg);
-  }
-  .mainScroll { flex: 1; overflow-y: auto; padding: 16px; }
-
-  .appHeader { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
-  .appHeader img { width: 28px; height: 28px; border-radius: 8px; }
-  .appHeader h1 { font-size: 15px; margin: 0; color: #fff; font-weight: 700; letter-spacing: 0.2px; }
-
-  .card {
-    background: var(--bg-elev-2);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 12px;
-  }
-  .sidebar .card { background: var(--bg); }
-  .friendsCard { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-  .friendsCard[hidden] { display: none; } /* the class's own display: flex above would otherwise beat the attribute */
-  .friendsCard label { flex-shrink: 0; }
-  .friendsCard ul { flex: 1; overflow-y: auto; }
   label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); display: block; margin-bottom: 6px; font-weight: 600; }
   .row { display: flex; gap: 8px; align-items: center; }
   .row input { flex: 1; min-width: 0; }
   .row[hidden], label[hidden] { display: none; }
   .settingsPane button.secondary { background: var(--bg); border: 1px solid var(--border); }
-  .settingsPane button.secondary:hover { border-color: var(--accent); }
+  .settingsPane button.secondary:hover { border-color: var(--accent); background: #121a2f; }
+  /* Looks like the key it's bound to. */
+  #pttKeyBtn {
+    min-width: 44px; font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 12px;
+    border-bottom-width: 3px; padding: 6px 12px 5px;
+  }
   /* What's on screen is the pretty Name#1234 tag, not the real ID — so it's
      click-to-copy rather than text-selectable, which would copy the wrong thing. */
   #myId {
@@ -74,23 +64,6 @@
   }
   #myId:hover { border-color: var(--accent); }
   .hint { font-size: 11.5px; color: var(--text-muted); margin: 0 0 6px; line-height: 1.4; }
-  .addFriendStep + .addFriendStep { margin-top: 12px; }
-
-  .profileRow {
-    display: flex; align-items: center; gap: 10px; padding: 8px 10px;
-    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
-    margin-bottom: 4px;
-  }
-  .profileRow .avatar { width: 32px; height: 32px; font-size: 12.5px; }
-  .profileNameWrap { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-  .profileName {
-    font-weight: 700; font-size: 13.5px; color: #fff;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .profileNameWrap .activity[hidden] { display: none; }
-  .profileRow .dockBtn { width: 32px; height: 32px; background: transparent; }
-  .profileRow .dockBtn svg { width: 17px; height: 17px; }
-  .profileRow .dockBtn:hover { background: var(--bg-elev-2); }
 
   button {
     background: var(--accent); color: #fff; border: none; border-radius: var(--radius-sm);
@@ -100,16 +73,25 @@
   button:hover { background: var(--accent-hover); }
   button:active { transform: scale(0.97); }
   button.secondary { background: var(--bg-elev-2); color: var(--text); }
-  button.secondary:hover { background: #3a3b40; }
+  button.secondary:hover { background: #26325a; }
   button.ghost { background: transparent; color: var(--text-muted); }
   button.ghost:hover { background: var(--bg-elev-2); color: var(--text); }
+  button:focus { outline: none; }
+  button:focus-visible { box-shadow: 0 0 0 3px var(--accent-glow); }
 
   input[type=text] {
     background: var(--bg); border: 1px solid var(--border); color: var(--text);
     border-radius: var(--radius-sm); padding: 8px 10px; font-size: 13px; width: 100%;
-    transition: border-color 0.12s ease;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.25);
+    transition: border-color 0.12s ease, box-shadow 0.12s ease, background-color 0.12s ease;
   }
-  input[type=text]:focus { outline: none; border-color: var(--accent); }
+  input[type=text]::placeholder { color: var(--text-muted); opacity: 0.7; }
+  input[type=text]:hover { border-color: #3a4878; }
+  input[type=text]:focus {
+    outline: none; border-color: var(--accent); background-color: #0f1527;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.25), 0 0 0 3px var(--accent-glow);
+  }
+  /* Only shown if select.js didn't take over — see enhanceSelect. */
   select {
     appearance: none; -webkit-appearance: none;
     background: var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238892b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E") no-repeat right 10px center;
@@ -119,16 +101,64 @@
   }
   select:hover { border-color: var(--accent); background-color: var(--bg-elev-2); }
   select:focus { outline: none; border-color: var(--accent); }
-  .connect-row { display: flex; gap: 6px; margin-top: 8px; }
-  .connect-row input { flex: 1; }
+
+  /* Themed dropdown that stands in for a <select> (ui/select.js). */
+  .fancySelect { position: relative; width: 100%; min-width: 0; }
+  .fancySelect > select { display: none; }
+  .fancySelectTrigger {
+    width: 100%; display: flex; align-items: center; gap: 8px; text-align: left;
+    background: linear-gradient(180deg, #121a2f, var(--bg)); color: var(--text);
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 8px 10px 8px 12px; font-size: 13px; font-weight: 500;
+    box-shadow: 0 1px 0 rgba(255,255,255,0.03) inset, 0 1px 2px rgba(0,0,0,0.25);
+    transition: border-color 0.12s ease, box-shadow 0.15s ease, background 0.12s ease;
+  }
+  .fancySelectTrigger:hover { background: linear-gradient(180deg, #18223d, #111830); border-color: #3a4878; }
+  .fancySelectTrigger:active { transform: none; }
+  .fancySelectTrigger:focus { outline: none; }
+  .fancySelectTrigger:focus-visible, .fancySelect.open .fancySelectTrigger {
+    border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow);
+  }
+  .fancySelectTrigger:disabled { opacity: 0.5; cursor: default; }
+  .fancySelectValue { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fancySelectChevron {
+    width: 20px; height: 20px; margin-right: -3px; flex-shrink: 0; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center; color: var(--text-muted);
+    transition: transform 0.18s ease, color 0.12s ease, background 0.12s ease;
+  }
+  .fancySelectChevron svg { width: 14px; height: 14px; }
+  .fancySelectTrigger:hover .fancySelectChevron { color: var(--text); }
+  .fancySelect.open .fancySelectChevron { transform: rotate(180deg); color: var(--accent); background: var(--accent-glow); }
+
+  .fancySelectMenu {
+    position: fixed; z-index: 300; overflow-y: auto; padding: 5px;
+    background: rgba(21,29,51,0.96); backdrop-filter: blur(10px);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: 0 12px 32px rgba(0,0,0,0.55), 0 0 0 1px rgba(63,127,245,0.08), 0 0 24px -6px rgba(63,127,245,0.25);
+    animation: menu-in 0.14s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+    transform-origin: top center;
+  }
+  .fancySelectMenu.up { transform-origin: bottom center; animation-name: menu-in-up; }
+  @keyframes menu-in { from { opacity: 0; transform: translateY(-4px) scale(0.97); } }
+  @keyframes menu-in-up { from { opacity: 0; transform: translateY(4px) scale(0.97); } }
+  .fancySelectOption {
+    display: flex; align-items: center; gap: 10px; padding: 7px 8px 7px 10px;
+    border-radius: 7px; font-size: 13px; color: var(--text); cursor: pointer; user-select: none;
+    position: relative;
+  }
+  .fancySelectOption + .fancySelectOption { margin-top: 1px; }
+  .fancySelectOption.active { background: var(--bg-elev-2); }
+  .fancySelectOption.selected { color: #fff; font-weight: 600; background: linear-gradient(90deg, rgba(63,127,245,0.28), rgba(63,127,245,0.1)); }
+  .fancySelectOption.selected.active { background: linear-gradient(90deg, rgba(63,127,245,0.38), rgba(63,127,245,0.16)); }
+  .fancySelectOption.selected::before {
+    content: ""; position: absolute; left: 0; top: 7px; bottom: 7px; width: 3px; border-radius: 3px;
+    background: var(--accent); box-shadow: 0 0 8px var(--accent);
+  }
+  .fancySelectOptionText { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fancySelectCheck { width: 16px; height: 16px; flex-shrink: 0; color: var(--accent); display: flex; }
+  .fancySelectCheck svg { width: 16px; height: 16px; }
 
   ul { list-style: none; margin: 0; padding: 0; }
-  li.friendRow {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 8px 6px; border-radius: var(--radius-sm); font-size: 13px;
-    transition: background 0.12s ease; overflow: hidden;
-  }
-  li.friendRow:hover { background: var(--bg-elev-2); }
   .who { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 auto; }
   .avatar {
     width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
@@ -145,69 +175,11 @@
   #myId .tag { font-size: 13px; }
   #myId .tagName { color: var(--text); font-weight: 600; }
   .actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
-
-  .avatarWrap { position: relative; flex-shrink: 0; }
-  .avatarWrap .dot { position: absolute; right: -1px; bottom: -1px; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bg-elev-2); box-shadow: 0 0 0 2.5px var(--bg-elev); }
-  .dot.online { background: var(--success); box-shadow: 0 0 0 2.5px var(--bg-elev), 0 0 6px 1px rgba(47,182,115,0.6); }
-
-  .removeBtn { padding: 4px 8px; font-size: 15px; line-height: 1; flex-shrink: 0; }
-  /* Removing a friend also wipes your chat history with them — keep it out of the
-     way until you're actually pointing at that row, and make it a two-step click. */
-  li.friendRow .removeBtn { opacity: 0; transition: opacity 0.12s ease, background 0.12s ease; }
-  li.friendRow:hover .removeBtn, li.friendRow .removeBtn:focus-visible, li.friendRow .removeBtn.confirm { opacity: 1; }
-  .removeBtn.confirm { background: var(--danger); color: #fff; font-size: 11px; padding: 5px 8px; }
-  .removeBtn.confirm:hover { background: #c73f48; color: #fff; }
   .status { font-size: 10.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
   .status.online { color: var(--success); }
-  #pendingList .removeBtn { opacity: 1; } /* cancelling a request loses nothing — no need to hide it */
-  .callToggleBtn {
-    width: 28px; height: 28px; border-radius: 50%; padding: 0; flex-shrink: 0;
-    display: flex; align-items: center; justify-content: center;
-  }
-  .callToggleBtn svg { width: 14px; height: 14px; }
-  .callToggleBtn.callBtnIcon { background: var(--success); }
-  .callToggleBtn.callBtnIcon:hover { background: #24925f; }
-  .callToggleBtn.hangupBtn { background: var(--danger); }
-  .callToggleBtn.hangupBtn:hover { background: #c73f48; }
-  .chatToggleBtn {
-    width: 28px; height: 28px; border-radius: 50%; padding: 0; flex-shrink: 0;
-    display: flex; align-items: center; justify-content: center;
-    background: var(--accent);
-  }
-  .chatToggleBtn svg { width: 14px; height: 14px; }
-  .chatToggleBtn:hover { background: var(--accent-hover); }
-  .chatToggleBtn.active { background: var(--accent-hover); box-shadow: 0 0 0 2px var(--accent); }
-  .chatToggleBtn.offline { background: var(--bg-elev-2); color: var(--text-muted); } /* still works — messages wait for them */
-  .chatToggleBtn.offline:hover { color: var(--text); }
-  .chatToggleBtn { position: relative; }
-  .unreadBadge {
-    position: absolute; top: -5px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px;
-    background: var(--danger); color: #fff; font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
-    box-shadow: 0 0 0 2px var(--bg);
-  }
-  li.friendRow.unread .name { color: #fff; font-weight: 800; }
-  .empty { color: #6b6c72; font-size: 12.5px; padding: 6px 0; }
-
-  #incomingCalls, #friendRequests { display: flex; flex-direction: column; gap: 8px; }
-  .incomingCall {
-    background: linear-gradient(135deg, rgba(63,127,245,0.22), rgba(63,127,245,0.06));
-    border: 1px solid var(--accent); border-radius: var(--radius);
-    padding: 12px 14px; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center;
-    animation: ring-in 0.2s ease-out;
-  }
-  .incomingCall .who { gap: 12px; }
-  .incomingCall .avatar { width: 38px; height: 38px; font-size: 14px; animation: ring 1s ease-in-out infinite; }
-  @keyframes ring { 0%, 100% { transform: rotate(0deg); } 25% { transform: rotate(-8deg); } 75% { transform: rotate(8deg); } }
   @keyframes ring-in { from { opacity: 0; transform: translateY(-8px) scale(0.97); } }
-  .callLabel { font-size: 12px; color: var(--text-muted); display: block; }
-  .callName { font-size: 14px; font-weight: 700; color: #fff; }
-  .acceptBtn { background: var(--success); }
-  .acceptBtn:hover { background: #24925f; }
-  .declineBtn { background: var(--danger); }
-  .declineBtn:hover { background: #c73f48; }
 
-  #toasts { position: fixed; top: 12px; right: 12px; width: min(360px, calc(100% - 24px)); display: flex; flex-direction: column; gap: 6px; z-index: 100; }
+  #toasts { position: fixed; top: 62px; right: 12px; width: min(360px, calc(100% - 24px)); display: flex; flex-direction: column; gap: 6px; z-index: 100; }
   .toast {
     background: var(--bg-elev); border: 1px solid var(--border); border-left: 3px solid var(--danger); color: #fff;
     border-radius: var(--radius-sm); padding: 10px 12px; font-size: 13px;
@@ -274,14 +246,26 @@
     background: transparent; color: var(--text-muted); text-align: left; font-size: 12.5px; font-weight: 600;
     padding: 8px 10px; border-radius: var(--radius-sm); width: 100%;
   }
+  .settingsTabBtn { position: relative; }
   .settingsTabBtn:hover { background: var(--bg-elev); color: var(--text); }
-  .settingsTabBtn.active { background: var(--bg-elev); color: #fff; }
+  .settingsTabBtn.active { background: linear-gradient(90deg, rgba(63,127,245,0.2), rgba(63,127,245,0.05)); color: #fff; }
+  .settingsTabBtn.active::before {
+    content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 3px;
+    background: var(--accent); box-shadow: 0 0 8px var(--accent);
+  }
   .settingsPanes { flex: 1; min-width: 0; padding: 16px; }
   .settingsPane[hidden] { display: none; }
   .settingsNav .appVersion { margin-top: auto; padding: 0 2px; text-align: left; }
-  .micMeter { height: 6px; border-radius: 999px; background: var(--bg); border: 1px solid var(--border); margin-top: 8px; overflow: hidden; }
-  .micMeterFill { height: 100%; width: 0%; background: var(--success); transition: width 0.06s linear; }
-  .row select { flex: 1; min-width: 0; }
+  .micMeter {
+    height: 8px; border-radius: 999px; background: var(--bg); border: 1px solid var(--border); margin-top: 8px; overflow: hidden;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.35);
+  }
+  .micMeterFill {
+    height: 100%; width: 0%; border-radius: 999px; transition: width 0.06s linear;
+    background: linear-gradient(90deg, var(--success), #5fd99a);
+    box-shadow: 0 0 8px rgba(47,182,115,0.6);
+  }
+  .row select, .row .fancySelect { flex: 1; min-width: 0; }
 
   #releaseNotesModal .card { width: min(420px, 90%); margin: 0; max-height: 70vh; display: flex; flex-direction: column; }
   .releaseNotesBody {
@@ -299,30 +283,26 @@
   .switch { position: relative; display: inline-block; width: 40px; height: 23px; flex-shrink: 0; cursor: pointer; }
   .switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; z-index: 1; }
   .switchTrack {
-    position: absolute; inset: 0; background: var(--bg-elev-2); border: 1px solid var(--border);
-    border-radius: 999px; transition: background 0.15s ease, border-color 0.15s ease;
+    position: absolute; inset: 0; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 999px; box-shadow: inset 0 1px 3px rgba(0,0,0,0.4);
+    transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
   }
   .switchKnob {
     position: absolute; top: 2px; left: 2px; width: 17px; height: 17px; border-radius: 50%;
-    background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.4); transition: transform 0.15s ease;
+    background: linear-gradient(180deg, #c3cae3, #9aa3c4); box-shadow: 0 1px 3px rgba(0,0,0,0.45);
+    transition: transform 0.2s cubic-bezier(0.3, 1.4, 0.5, 1), background 0.18s ease;
   }
-  .switch input:checked ~ .switchTrack { background: var(--accent); border-color: var(--accent); }
-  .switch input:checked ~ .switchTrack .switchKnob { transform: translateX(17px); }
+  .switch:hover .switchTrack { border-color: #3a4878; }
+  .switch input:checked ~ .switchTrack {
+    background: linear-gradient(180deg, #4a8bff, var(--accent)); border-color: var(--accent);
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.2), 0 0 10px rgba(63,127,245,0.45);
+  }
+  .switch input:checked ~ .switchTrack .switchKnob { transform: translateX(17px); background: #fff; }
   .switch input:focus-visible ~ .switchTrack { outline: 2px solid var(--accent); outline-offset: 2px; }
   .modalHeader { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
   .modalHeader label { margin: 0; }
   .modalHeader .ghost { font-size: 16px; padding: 2px 8px; }
 
-  /* control dock */
-  #dock {
-    position: relative; flex-shrink: 0; border-top: 1px solid var(--border); min-height: 67px;
-    padding: 12px; display: flex; align-items: center; justify-content: center; gap: 10px;
-  }
-  /* The log is a diagnostics thing, not a call control — tucked into the corner
-     so the middle of the dock is only ever mute / share / leave. */
-  #dock #logToggleBtn { position: absolute; right: 12px; width: 34px; height: 34px; background: transparent; color: var(--text-muted); }
-  #dock #logToggleBtn:hover, #dock #logToggleBtn.open { background: var(--bg-elev-2); color: var(--text); }
-  #dock #logToggleBtn svg { width: 16px; height: 16px; }
   .dockBtn.leave { background: var(--danger); width: 56px; border-radius: 21px; }
   .dockBtn.leave:hover { background: #c73f48; }
   .dockBtn {
@@ -330,38 +310,14 @@
     display: flex; align-items: center; justify-content: center; padding: 0; flex-shrink: 0;
   }
   .dockBtn[hidden] { display: none; } /* class's own `display: flex` above would otherwise beat the attribute */
-  .dockBtn:hover { background: #3a3b40; }
+  .dockBtn:hover { background: #26325a; }
   .dockBtn svg { width: 19px; height: 19px; }
   .dockBtn.active { background: var(--danger); }
   .dockBtn.active:hover { background: #c73f48; }
   .dockBtn.sharing { background: var(--accent); }
   .dockBtn.sharing:hover { background: var(--accent-hover); }
-
-  #logPanel[hidden] { display: none; }
-  #logPanel {
-    flex-shrink: 0; max-height: 160px; overflow-y: auto;
-    border-top: 1px solid var(--border);
-    padding: 10px 16px;
-  }
   #status { font-size: 11.5px; color: var(--text-muted); white-space: pre-wrap; font-family: ui-monospace, monospace; }
 
-  .sectionTitle { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); font-weight: 600; margin: 4px 0 12px; }
-  .sectionTitle[hidden] { display: none; }
-  .callParticipants { display: flex; flex-wrap: wrap; gap: 16px; padding-bottom: 6px; }
-  .participant { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 88px; }
-  .participant .avatarWrap { position: relative; }
-  .participant .avatar { width: 54px; height: 54px; font-size: 17px; }
-  .participant.dialing .avatar { opacity: 0.45; }
-  .participant .avatar { transition: box-shadow 0.12s ease; }
-  .participant.speaking .avatar { box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--success); }
-  .participant .mutedBadge {
-    position: absolute; right: -2px; bottom: -2px; width: 22px; height: 22px; border-radius: 50%;
-    background: var(--danger); color: #fff; display: flex; align-items: center; justify-content: center;
-    box-shadow: 0 0 0 3px var(--bg);
-  }
-  .participant .mutedBadge svg { width: 12px; height: 12px; }
-  .participant .pname.sub { color: var(--text-muted); }
-  .participant .pname { font-size: 11.5px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
   .volumeBtn {
     width: 26px; height: 26px; border-radius: 50%; padding: 0;
     display: flex; align-items: center; justify-content: center;
@@ -385,15 +341,20 @@
     display: block; width: 100%; box-sizing: border-box; margin: 0;
     -webkit-appearance: none; appearance: none; height: 4px; border-radius: 999px; cursor: pointer;
   }
+  .volumePopoverSlider:focus { outline: none; }
   .volumePopoverSlider::-webkit-slider-thumb {
     -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
-    background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.5); cursor: pointer; margin-top: -5px;
+    background: #fff; border: 3px solid var(--accent); cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.5), 0 0 0 0 var(--accent-glow);
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
   }
+  .volumePopoverSlider:hover::-webkit-slider-thumb { transform: scale(1.15); box-shadow: 0 1px 3px rgba(0,0,0,0.5), 0 0 0 5px var(--accent-glow); }
+  .volumePopoverSlider:focus-visible::-webkit-slider-thumb { box-shadow: 0 1px 3px rgba(0,0,0,0.5), 0 0 0 5px var(--accent-glow); }
   .volumePct { font-size: 11px; color: var(--text-muted); }
 
   #screenSharePopover[hidden] { display: none; }
   #screenSharePopover {
-    position: fixed; z-index: 250; width: 190px; box-sizing: border-box;
+    position: fixed; z-index: 250; width: 220px; box-sizing: border-box;
     background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: var(--radius);
     padding: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
     display: flex; flex-direction: column; gap: 8px;
@@ -401,13 +362,9 @@
   }
   .screenSharePopoverTitle { font-size: 11px; color: var(--text-muted); }
   .screenSharePopoverRow { display: flex; gap: 6px; }
-  .screenSharePopoverRow select { flex: 1; min-width: 0; }
+  .screenSharePopoverRow select, .screenSharePopoverRow .fancySelect { flex: 1; min-width: 0; }
+  .screenSharePopoverRow .fancySelectTrigger { padding-left: 10px; padding-right: 6px; gap: 4px; }
 
-  .emptyState { color: var(--text-muted); font-size: 13px; text-align: center; padding: 60px 20px; line-height: 1.5; }
-  .emptyState[hidden] { display: none; }
-  .emptyState > svg { width: 40px; height: 40px; margin-bottom: 10px; opacity: 0.5; }
-  .emptyState h2 { font-size: 17px; color: #fff; margin: 0 0 6px; }
-  .emptyState p { margin: 0 auto; max-width: 380px; }
   .steps { list-style: none; margin: 20px auto 0; padding: 0; max-width: 400px; text-align: left; display: flex; flex-direction: column; gap: 10px; }
   .steps li { display: flex; gap: 12px; align-items: flex-start; background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; color: var(--text); }
   .steps .stepNum {
@@ -415,30 +372,435 @@
     display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700;
   }
   .steps small { display: block; color: var(--text-muted); font-size: 12px; margin-top: 2px; }
-  .emptyState .inlineIcon { display: inline-flex; vertical-align: -3px; width: 16px; height: 16px; border-radius: 50%; background: var(--success); color: #fff; align-items: center; justify-content: center; }
-  .emptyState .inlineIcon svg { width: 9px; height: 9px; }
-  .emptyState .inlineDot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--success); vertical-align: 0; }
 
-  .chatPanel[hidden] { display: none; }
-  .chatPanel {
-    width: 250px; flex-shrink: 0; border-left: 1px solid var(--border);
-    display: flex; flex-direction: column; background: var(--bg-elev);
+  /* --- Discord-style layout: rail | sidebar (DMs + you) | main --------------
+     Each surface has a --ring: the color status dots cut their outline out of,
+     so a dot sits cleanly on whatever it's drawn over. */
+
+  .app { display: flex; height: 100vh; }
+
+  .avatarWrap { position: relative; flex-shrink: 0; display: inline-flex; }
+  .avatarWrap .dot { position: absolute; right: -2px; bottom: -2px; }
+  .dot {
+    width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
+    background: var(--ring, var(--bg)); border: 3px solid var(--text-faint);
+    box-shadow: 0 0 0 3px var(--ring, var(--bg));
   }
-  .chatHeader {
-    padding: 10px 14px; border-bottom: 1px solid var(--border);
-    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  .dot.online { background: var(--success); border: none; }
+  .tagHash { font-family: ui-monospace, "SF Mono", Consolas, monospace; }
+
+  .iconBtn {
+    width: 32px; height: 32px; padding: 0; border-radius: 6px; flex-shrink: 0;
+    background: transparent; color: var(--text-muted);
+    display: flex; align-items: center; justify-content: center;
   }
-  .chatHeaderName { font-size: 13px; font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .chatMessages { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
-  .chatMessages:empty::before { content: attr(data-empty); color: var(--text-muted); font-size: 12px; text-align: center; margin: auto 0; line-height: 1.5; }
-  .chatMsg { font-size: 12.5px; line-height: 1.4; }
-  .chatMsg .who { font-weight: 700; }
-  .chatMsg .time { color: var(--text-muted); font-size: 10px; margin-left: 6px; }
-  .chatMsg .text { display: block; overflow-wrap: anywhere; }
+  .iconBtn svg { width: 19px; height: 19px; }
+  .iconBtn:hover { background: var(--hover); color: var(--text); }
+  .iconBtn[hidden] { display: none; }
+  .iconBtn.active { color: var(--danger); } /* muted */
+  .iconBtn.sharing { color: var(--accent); }
+
+  input[type=text].searchInput {
+    height: 30px; padding: 4px 10px; font-size: 12.5px;
+    background: var(--input); border-color: transparent; box-shadow: none;
+  }
+  input[type=text].searchInput:focus { border-color: var(--accent); background: var(--input); }
+
+  /* rail */
+  .rail {
+    width: 68px; flex-shrink: 0; background: var(--rail); --ring: var(--rail);
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    padding: 12px 0; overflow-y: auto; scrollbar-width: none;
+  }
+  .rail::-webkit-scrollbar { display: none; }
+  .railBtn {
+    position: relative; width: 46px; height: 46px; border-radius: 50%; padding: 0; flex-shrink: 0;
+    background: var(--bg-elev); color: var(--text);
+    display: flex; align-items: center; justify-content: center;
+    transition: border-radius 0.18s ease, background 0.15s ease, color 0.15s ease;
+  }
+  .railBtn svg { width: 22px; height: 22px; }
+  .railBtn:active { transform: translateY(1px); }
+  .railBtn::before {
+    content: ""; position: absolute; left: -11px; top: 50%; width: 4px; height: 0;
+    border-radius: 0 4px 4px 0; background: #fff; transform: translateY(-50%);
+    transition: height 0.15s ease;
+  }
+  .railBtn:hover { border-radius: 15px; background: var(--accent); }
+  .railBtn:hover::before { height: 20px; }
+  .railBtn.home { border-radius: 15px; background: var(--accent); overflow: visible; }
+  .railBtn.home::before { height: 40px; }
+  .railBtn.home img { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
+  .railBtn.add { color: var(--success); }
+  .railBtn.add:hover { background: var(--success); color: #fff; }
+  .railBtn.avatarBtn { background: transparent; }
+  .railBtn.avatarBtn .avatar { width: 46px; height: 46px; font-size: 15px; border-radius: inherit; transition: border-radius 0.18s ease; }
+  .railBtn.avatarBtn::before { height: 8px; }
+  .railBtn.avatarBtn:hover::before { height: 20px; }
+  .railBtn.small { width: 40px; height: 40px; background: transparent; color: var(--text-muted); }
+  .railBtn.small svg { width: 18px; height: 18px; }
+  .railBtn.small::before { display: none; }
+  .railBtn.small:hover, .railBtn.small.open { background: var(--bg-elev); color: var(--text); }
+  .railBadge {
+    position: absolute; right: -4px; bottom: -4px; min-width: 18px; height: 18px; padding: 0 5px;
+    border-radius: 9px; background: var(--danger); color: #fff;
+    font-size: 11px; font-weight: 700; line-height: 18px; text-align: center;
+    box-shadow: 0 0 0 3px var(--rail);
+  }
+  .railBadge[hidden] { display: none; }
+  .railSep { width: 30px; height: 2px; border-radius: 1px; background: var(--divider); flex-shrink: 0; }
+  .railUnread { display: contents; }
+  .railSpacer { flex: 1; }
+
+  /* sidebar */
+  .sidebar {
+    width: 236px; flex-shrink: 0; background: var(--side); --ring: var(--side);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  .sidebarTop {
+    height: 52px; flex-shrink: 0; padding: 0 10px; display: flex; align-items: center;
+    box-shadow: var(--header-shadow); position: relative; z-index: 1;
+  }
+  .sidebarScroll { flex: 1; overflow-y: auto; padding: 8px; }
+  .navItem {
+    width: 100%; height: 42px; padding: 0 10px; border-radius: 6px; text-align: left;
+    display: flex; align-items: center; gap: 12px;
+    background: transparent; color: var(--text-muted); font-size: 14px; font-weight: 600;
+  }
+  .navItem svg { width: 20px; height: 20px; }
+  .navItem:hover { background: var(--hover); color: var(--text); }
+  .navItem.active { background: var(--active); color: #fff; }
+  .navItem:active { transform: none; }
+  .navBadge {
+    min-width: 16px; height: 16px; padding: 0 5px; border-radius: 8px; margin-left: auto;
+    background: var(--danger); color: #fff; font-size: 10.5px; font-weight: 700; line-height: 16px; text-align: center;
+  }
+  .navBadge[hidden] { display: none; }
+  .dmHeader {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 6px 6px 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+    text-transform: uppercase; color: var(--text-muted);
+  }
+  .dmHeader:hover { color: var(--text); }
+  .dmHeader .iconBtn { width: 20px; height: 20px; color: inherit; }
+  .dmHeader .iconBtn svg { width: 15px; height: 15px; }
+  .dmHeader .iconBtn:hover { background: transparent; color: #fff; }
+  .dmRow {
+    display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 8px; margin-bottom: 2px;
+    border-radius: 6px; cursor: pointer; color: var(--text-muted); transition: background 0.1s ease;
+  }
+  .dmRow:hover { background: var(--hover); color: var(--text); --ring: #191f31; }
+  .dmRow.active { background: var(--active); color: #fff; --ring: #23293d; }
+  .dmRow .avatar { width: 32px; height: 32px; font-size: 12px; }
+  .dmRow .name { font-size: 14px; font-weight: 500; }
+  .dmRow.unread .name, .dmRow.active .name { color: #fff; }
+  .dmRow.unread .name { font-weight: 700; }
+  .dmRow .status, .dmRow .activity { font-size: 11.5px; }
+  .dmRow.offline .avatar { opacity: 0.55; }
+  .dmRow .unreadBadge { position: static; flex-shrink: 0; box-shadow: none; }
+  .dmEmpty { color: var(--text-faint); font-size: 12.5px; padding: 6px 10px; line-height: 1.5; }
+
+  .voicePanel {
+    flex-shrink: 0; display: flex; align-items: center; gap: 2px;
+    padding: 8px 8px 8px 10px; background: #0b1120; border-bottom: 1px solid var(--divider);
+  }
+  .voicePanel[hidden] { display: none; }
+  .voiceInfo { flex: 1; min-width: 0; cursor: pointer; display: flex; flex-direction: column; gap: 1px; }
+  .voiceStatus { display: flex; align-items: center; gap: 6px; color: var(--success); font-size: 13px; font-weight: 700; }
+  .voiceStatus svg { width: 16px; height: 16px; }
+  .voicePanel.dialing .voiceStatus { color: var(--warning); }
+  .voiceSub { font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .voiceInfo:hover .voiceSub { color: var(--text); text-decoration: underline; }
+  #panelLeaveBtn:hover { color: var(--danger); }
+
+  .userPanel {
+    flex-shrink: 0; height: 56px; padding: 0 8px; display: flex; align-items: center; gap: 2px;
+    background: #0a0f1d; --ring: #0a0f1d;
+  }
+  .userInfo {
+    flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px;
+    padding: 4px; margin-right: 4px; border-radius: 6px; cursor: pointer;
+  }
+  .userInfo:hover { background: var(--hover); --ring: #15192a; }
+  .userPanel .avatar { width: 32px; height: 32px; font-size: 12px; }
+  .userText { display: flex; flex-direction: column; min-width: 0; }
+  .profileName { font-weight: 700; font-size: 13.5px; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .userText .activity[hidden], .userSub[hidden] { display: none; }
+  .userSub { font-size: 11.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* main */
+  .main {
+    flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative;
+    background: var(--main-bg); --ring: var(--main-bg);
+  }
+  .mainHeader {
+    height: 52px; flex-shrink: 0; padding: 0 12px 0 18px; display: flex; align-items: center; min-width: 0;
+    box-shadow: var(--header-shadow); position: relative; z-index: 2;
+  }
+  .headerSection { display: none; align-items: center; gap: 8px; width: 100%; min-width: 0; }
+  .main[data-view="friends"] .headerSection[data-for="friends"],
+  .main[data-view="dm"] .headerSection[data-for="dm"],
+  .main[data-view="call"] .headerSection[data-for="call"] { display: flex; }
+  .headerIcon { display: flex; color: var(--text-faint); flex-shrink: 0; }
+  .headerIcon svg { width: 22px; height: 22px; }
+  .headerTitle { font-size: 15px; font-weight: 700; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .headerTitle[hidden] { display: none; }
+  .headerDivider { width: 1px; height: 24px; margin: 0 6px; background: var(--divider); flex-shrink: 0; }
+  .headerSpacer { flex: 1; }
+  .headerStatus { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-muted); white-space: nowrap; margin-left: 4px; }
+  .headerStatus .activity, .headerStatus .status { font-size: 12.5px; }
+  .headerBtn { width: 36px; height: 36px; }
+  .headerBtn svg { width: 20px; height: 20px; }
+  .headerBtn.on { color: var(--text); background: var(--active); }
+  #dmCallBtn:hover { color: var(--success); }
+  #dmCallBtn.inCall { color: var(--success); }
+  .friendsTabs { display: flex; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .friendsTab {
+    display: flex; align-items: center; gap: 6px; white-space: nowrap;
+    padding: 3px 10px; border-radius: 6px; font-size: 14px; font-weight: 600;
+    background: transparent; color: var(--text-muted);
+  }
+  .friendsTab:hover { background: var(--hover); color: var(--text); }
+  .friendsTab.active { background: var(--active); color: #fff; }
+  .friendsTab .navBadge { margin-left: 0; }
+  .friendsTab.addTab { background: var(--success); color: #fff; }
+  .friendsTab.addTab:hover { background: #24925f; }
+  .friendsTab.addTab.active { background: transparent; color: var(--success); }
+
+  .noticeBar { flex-shrink: 0; padding: 8px 16px; background: var(--danger); color: #fff; font-size: 13px; text-align: center; line-height: 1.4; }
+  .noticeBar[hidden] { display: none; }
+
+  .mainBody { flex: 1; min-height: 0; display: flex; position: relative; }
+  .friendsView, .callStage, .chatPane { display: none; }
+  .main[data-view="friends"] .friendsView { display: flex; }
+  .main[data-view="dm"] .chatPane { display: flex; flex: 1; }
+  .main[data-view="call"] .callStage { display: flex; }
+  .main[data-view="call"]:not(.callChatHidden) .chatPane {
+    display: flex; width: 300px; flex-shrink: 0; background: var(--side); --ring: var(--side);
+    border-left: 1px solid var(--divider);
+  }
+  @media (max-width: 1000px) {
+    .main[data-view="call"]:not(.callChatHidden) .chatPane { width: 240px; }
+  }
+
+  /* friends page */
+  .friendsView { flex: 1; min-width: 0; flex-direction: column; padding: 16px 22px 0 28px; }
+  .friendsSearchRow { margin-bottom: 14px; flex-shrink: 0; }
+  .friendsSearchRow[hidden], .friendsListLabel[hidden] { display: none; }
+  .friendsSearchRow input[type=text].searchInput { height: 34px; font-size: 13.5px; }
+  .friendsListLabel {
+    flex-shrink: 0; margin: 4px 0 8px; font-size: 11.5px; font-weight: 700; letter-spacing: 0.5px;
+    text-transform: uppercase; color: var(--text-muted);
+  }
+  .friendsList { flex: 1; overflow-y: auto; margin-right: -12px; padding: 0 12px 12px 0; }
+  .friendsList[hidden] { display: none; }
+  .friendRow {
+    display: flex; align-items: center; gap: 12px; height: 62px; padding: 0 10px; margin: 0 -10px;
+    border-top: 1px solid var(--divider); border-radius: 8px; cursor: pointer; transition: background 0.1s ease;
+  }
+  .friendRow:hover { background: var(--hover); border-top-color: transparent; --ring: #1d243a; }
+  .friendRow:hover + .friendRow { border-top-color: transparent; }
+  .friendRow .avatar { width: 36px; height: 36px; font-size: 13px; }
+  .nameLine { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
+  .friendRow .name { font-size: 14.5px; font-weight: 700; color: var(--text); }
+  .friendRow .nameLine .tagHash { font-size: 12px; color: var(--text-muted); opacity: 0; transition: opacity 0.1s ease; flex-shrink: 0; }
+  .friendRow:hover .nameLine .tagHash { opacity: 1; }
+  .friendRow .status, .friendRow .activity { font-size: 12.5px; }
+  .friendRow .actions { gap: 10px; }
+  .roundBtn {
+    position: relative; width: 36px; height: 36px; border-radius: 50%; padding: 0; flex-shrink: 0;
+    background: var(--side); color: var(--text-muted);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .roundBtn svg { width: 18px; height: 18px; }
+  .roundBtn:hover { background: #0a0f1d; color: var(--text); }
+  .callToggleBtn:hover, .acceptBtn:hover { color: var(--success); }
+  .callToggleBtn.hangupBtn { color: var(--danger); }
+  .declineBtn:hover, .removeBtn:hover { color: var(--danger); }
+  /* Removing a friend also wipes your chat history with them — kept out of the
+     way until you're pointing at that row, and it takes two clicks. */
+  .friendRow .removeBtn { opacity: 0; transition: opacity 0.12s ease; }
+  .friendRow:hover .removeBtn, .friendRow .removeBtn:focus-visible, .removeBtn.confirm { opacity: 1; }
+  .roundBtn.removeBtn.confirm {
+    width: auto; padding: 0 14px; border-radius: 18px; background: var(--danger); color: #fff; font-size: 12px;
+  }
+  .roundBtn.removeBtn.confirm:hover { background: #c73f48; }
+  .unreadBadge {
+    position: absolute; top: -4px; right: -5px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+    background: var(--danger); color: #fff; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center;
+    box-shadow: 0 0 0 3px var(--ring, var(--bg));
+  }
+
+  .friendsEmpty {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+    padding: 20px; text-align: center; color: var(--text-muted);
+  }
+  .friendsEmpty[hidden] { display: none; }
+  .emptyArt {
+    width: 88px; height: 88px; border-radius: 50%; margin-bottom: 14px;
+    display: flex; align-items: center; justify-content: center; color: var(--accent);
+    background: radial-gradient(circle at 30% 30%, rgba(63,127,245,0.32), rgba(63,127,245,0.05));
+    box-shadow: 0 0 46px rgba(63,127,245,0.16);
+  }
+  .emptyArt svg { width: 38px; height: 38px; }
+  .friendsEmpty h3 { margin: 0; font-size: 15px; color: var(--text); }
+  .friendsEmpty p { margin: 0; max-width: 340px; font-size: 13px; line-height: 1.5; }
+  .friendsEmpty button { margin-top: 14px; }
+
+  .addFriendPane { flex: 1; overflow-y: auto; padding: 6px 0 24px; max-width: 760px; }
+  .addFriendPane[hidden] { display: none; }
+  .addFriendPane h2 { margin: 0 0 6px; font-size: 16px; color: #fff; text-transform: uppercase; letter-spacing: 0.3px; }
+  .addFriendPane h3 { margin: 0 0 6px; font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .addFriendPane .hint { font-size: 13px; }
+  .addFriendBox {
+    display: flex; align-items: center; gap: 8px; margin-top: 14px; padding: 7px 7px 7px 14px;
+    background: var(--input); border: 1px solid var(--border); border-radius: 10px;
+    transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  }
+  .addFriendBox:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+  .addFriendBox input[type=text], .addFriendBox input[type=text]:focus, .addFriendBox input[type=text]:hover {
+    flex: 1; min-width: 0; padding: 6px 0; border: none; background: transparent; box-shadow: none; font-size: 14px;
+  }
+  .addFriendBox button { white-space: nowrap; padding: 8px 14px; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button:disabled:active { transform: none; }
+  .addFriendDivider { height: 1px; margin: 26px 0 22px; background: var(--divider); }
+  .myIdBox { display: flex; gap: 8px; margin-top: 10px; max-width: 440px; }
+  #myId { background: var(--input); padding: 9px 12px; }
+  .welcomeSteps:empty { display: none; }
+  .welcomeSteps { margin-top: 26px; }
+  .welcomeSteps .steps { margin: 0; max-width: none; font-size: 13.5px; font-weight: 600; }
+  .welcomeSteps .steps small { font-weight: 400; }
+  .steps .stepNum { box-shadow: 0 0 10px rgba(63,127,245,0.5); }
+
+  /* call */
+  .callStage { flex: 1; min-width: 0; flex-direction: column; background: #070b15; --ring: #070b15; }
+  .stageScroll { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; justify-content: center; gap: 12px; }
+  #screenGrid:empty { display: none; }
+  #screenGrid { margin: 0; }
+  .callParticipants {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px;
+    width: 100%; max-width: 920px; margin: 0 auto;
+  }
+  .participant {
+    position: relative; aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--tile, #1a2240);
+    outline: 2px solid transparent; outline-offset: -2px;
+    transition: outline-color 0.1s ease, box-shadow 0.1s ease;
+  }
+  .participant.speaking { outline-color: var(--success); box-shadow: 0 0 18px rgba(47,182,115,0.35); }
+  .participant .avatar { width: 64px; height: 64px; font-size: 22px; box-shadow: 0 4px 18px rgba(0,0,0,0.35); }
+  .participant.dialing .avatar { animation: dial-pulse 1.4s ease-in-out infinite; }
+  @keyframes dial-pulse { 50% { opacity: 0.45; transform: scale(0.94); } }
+  .tileLabel {
+    position: absolute; left: 8px; bottom: 8px; max-width: calc(100% - 16px);
+    display: flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 6px;
+    background: rgba(0,0,0,0.55); backdrop-filter: blur(4px); color: #fff; font-size: 12px; font-weight: 600;
+  }
+  .tileLabel svg { width: 13px; height: 13px; flex-shrink: 0; color: var(--danger); }
+  .tileLabel .pname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tileLabel .sub { color: rgba(255,255,255,0.65); font-weight: 500; white-space: nowrap; }
+  .participant .volumeBtn {
+    position: absolute; top: 8px; right: 8px; width: 30px; height: 30px; border-radius: 50%; padding: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.5); color: #fff; opacity: 0; transition: opacity 0.12s ease;
+  }
+  .participant .volumeBtn svg { width: 15px; height: 15px; }
+  .participant .volumeBtn:hover { background: rgba(0,0,0,0.75); }
+  .participant:hover .volumeBtn, .participant .volumeBtn:focus-visible { opacity: 1; }
+  .callControls { flex-shrink: 0; display: flex; justify-content: center; gap: 14px; padding: 10px 16px 18px; }
+  .dockBtn { width: 52px; height: 52px; border-radius: 50%; background: #1b2442; color: var(--text); }
+  .dockBtn svg { width: 21px; height: 21px; }
+  .dockBtn.leave { width: 64px; border-radius: 26px; }
+
+  /* chat — DMs fill the main panel; call chat sits beside the call */
+  .chatPane { flex-direction: column; min-width: 0; min-height: 0; }
+  .chatPaneHeader {
+    display: none; height: 44px; flex-shrink: 0; align-items: center; gap: 8px; padding: 0 14px;
+    border-bottom: 1px solid var(--divider); font-size: 13.5px; font-weight: 700; color: var(--text);
+  }
+  .chatPaneHeader svg { width: 18px; height: 18px; color: var(--text-faint); }
+  .main[data-view="call"] .chatPaneHeader { display: flex; }
+  .chatMessages { flex: 1; overflow-y: auto; padding: 16px 0 12px; display: flex; flex-direction: column; }
+  .chatMessages > :first-child { margin-top: auto; }
+  .chatIntro { padding: 0 16px 8px; }
+  .chatIntro .avatar { width: 76px; height: 76px; font-size: 27px; margin-bottom: 12px; }
+  .chatIntro h2 { margin: 0; font-size: 26px; color: #fff; overflow-wrap: anywhere; }
+  .chatIntro .tag { font-size: 14px; }
+  .chatIntro p { margin: 8px 0 0; font-size: 13.5px; color: var(--text-muted); line-height: 1.5; }
+  .chatIntro.callIntro { text-align: center; padding: 0 20px 8px; }
+  .chatIntro.callIntro .emptyArt { width: 64px; height: 64px; margin: 0 auto 10px; }
+  .chatIntro.callIntro .emptyArt svg { width: 28px; height: 28px; }
+  .dateDivider {
+    display: flex; align-items: center; gap: 8px; margin: 16px 16px 4px;
+    font-size: 11.5px; font-weight: 600; color: var(--text-muted);
+  }
+  .dateDivider::before, .dateDivider::after { content: ""; flex: 1; height: 1px; background: var(--divider); }
+  .chatMsg {
+    --av: 40px; position: relative; display: flex; gap: 14px; margin-top: 14px; padding: 2px 16px;
+    font-size: 14px; line-height: 1.4;
+  }
+  .main[data-view="call"] .chatMsg { --av: 32px; gap: 10px; padding: 2px 12px; font-size: 13.5px; }
+  .chatMsg:hover { background: rgba(0,0,0,0.14); }
+  .chatMsg .avatar { width: var(--av); height: var(--av); font-size: calc(var(--av) * 0.36); margin-top: 2px; }
+  .chatMsg.grouped { margin-top: 0; padding-left: calc(16px + var(--av) + 14px); }
+  .main[data-view="call"] .chatMsg.grouped { padding-left: calc(12px + var(--av) + 10px); }
+  .msgBody { flex: 1; min-width: 0; }
+  .msgHead { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .msgAuthor { font-weight: 600; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chatMsg .time { font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+  .chatMsg .text { display: block; color: #d9def0; overflow-wrap: anywhere; }
+  .hoverTime {
+    position: absolute; left: 0; top: 5px; width: calc(16px + var(--av) + 6px); text-align: center;
+    font-size: 10px; color: var(--text-faint); opacity: 0;
+  }
+  .chatMsg.grouped:hover .hoverTime { opacity: 1; }
   .chatMsg.pending { opacity: 0.5; } /* ours, not yet confirmed delivered — see markDelivered */
   .chatMsg.pending .time::after { content: " · …"; }
-  .chatInputRow { display: flex; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--border); }
-  .chatInputRow input { flex: 1; }
+  .chatInputRow { flex-shrink: 0; padding: 0 16px 20px; }
+  .main[data-view="call"] .chatInputRow { padding: 0 12px 14px; }
+  .chatInputBox {
+    display: flex; align-items: center; gap: 4px; padding: 0 6px 0 16px; border-radius: 10px;
+    background: #1a2240; border: 1px solid transparent; transition: border-color 0.12s ease;
+  }
+  .chatInputBox:focus-within { border-color: rgba(63,127,245,0.5); }
+  .chatInputBox input[type=text], .chatInputBox input[type=text]:focus, .chatInputBox input[type=text]:hover {
+    flex: 1; min-width: 0; padding: 12px 0; border: none; background: transparent; box-shadow: none; font-size: 14px;
+  }
+  #chatSendBtn:hover { color: var(--accent); background: transparent; }
+
+  /* incoming call — floats over everything until answered */
+  #incomingCalls {
+    position: fixed; top: 64px; left: 50%; transform: translateX(-50%); z-index: 150;
+    display: flex; flex-direction: column; gap: 10px; width: 240px;
+  }
+  .incomingCall {
+    display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 24px 16px 18px;
+    background: var(--side); border: 1px solid var(--border); border-radius: 16px; --ring: var(--side);
+    box-shadow: 0 18px 44px rgba(0,0,0,0.6), 0 0 36px -8px rgba(63,127,245,0.4);
+    animation: ring-in 0.2s ease-out;
+  }
+  .ringAvatar { position: relative; margin-bottom: 14px; }
+  .ringAvatar .avatar { position: relative; z-index: 1; width: 76px; height: 76px; font-size: 27px; }
+  .ringAvatar::before, .ringAvatar::after {
+    content: ""; position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--success);
+    animation: ripple 1.6s ease-out infinite;
+  }
+  .ringAvatar::after { animation-delay: 0.8s; }
+  @keyframes ripple { from { transform: scale(1); opacity: 0.8; } to { transform: scale(1.65); opacity: 0; } }
+  .callName { max-width: 100%; font-size: 16px; font-weight: 700; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .callLabel { font-size: 12.5px; color: var(--text-muted); }
+  .incomingCall .actions { gap: 22px; margin-top: 16px; }
+  .incomingCall .roundBtn { width: 50px; height: 50px; color: #fff; }
+  .incomingCall .roundBtn svg { width: 22px; height: 22px; }
+  .incomingCall .acceptBtn { background: var(--success); }
+  .incomingCall .acceptBtn:hover { background: #24925f; color: #fff; }
+  .incomingCall .declineBtn { background: var(--danger); }
+  .incomingCall .declineBtn:hover { background: #c73f48; color: #fff; }
+
+  #logPanel[hidden] { display: none; }
+  #logPanel { flex-shrink: 0; max-height: 160px; overflow-y: auto; border-top: 1px solid var(--divider); padding: 10px 16px; background: var(--side); }
 </style>
 </head>
 <body>
@@ -615,86 +977,149 @@
   </div>
 
   <div class="app">
-    <aside class="sidebar">
-      <div class="appHeader">
+    <nav class="rail">
+      <button id="homeBtn" class="railBtn home" title="Friends" data-i18n-title="nav.friends">
         <img src="logo.png" alt="">
-        <h1>patycord</h1>
-      </div>
+        <span id="homeBadge" class="railBadge" hidden></span>
+      </button>
+      <div class="railSep"></div>
+      <div id="railUnread" class="railUnread"></div>
+      <button id="railAddBtn" class="railBtn add" title="Add a friend" data-i18n-title="sidebar.addFriend"></button>
+      <div class="railSpacer"></div>
+      <button id="logToggleBtn" class="railBtn small" title="Activity log" data-i18n-title="main.activityLog"></button>
+    </nav>
 
-      <div class="profileRow">
-        <div class="avatar" id="profileAvatar" style="background:#3f7ff5;">?</div>
-        <div class="profileNameWrap">
-          <div id="myName" class="profileName">—</div>
-          <div id="myActivityEl" class="activity" hidden></div>
+    <aside class="sidebar">
+      <div class="sidebarTop">
+        <input type="text" id="dmSearch" class="searchInput" data-i18n-placeholder="nav.searchDms" placeholder="Find a conversation">
+      </div>
+      <div class="sidebarScroll">
+        <button id="friendsNavBtn" class="navItem active">
+          <span class="navIcon"></span>
+          <span data-i18n="nav.friends">Friends</span>
+          <span id="friendsNavBadge" class="navBadge" hidden></span>
+        </button>
+        <div class="dmHeader">
+          <span data-i18n="nav.directMessages">Direct messages</span>
+          <button id="dmAddBtn" class="iconBtn" title="Add a friend" data-i18n-title="sidebar.addFriend"></button>
         </div>
-        <button id="settingsBtn" class="dockBtn ghost" title="Settings" data-i18n-title="settings.title"></button>
+        <ul id="dmList"></ul>
       </div>
 
-      <div class="card">
-        <label data-i18n="sidebar.addFriend">Add a friend</label>
-        <div class="addFriendStep">
-          <p class="hint" data-i18n="sidebar.shareYourId">Send them your ID…</p>
-          <div class="row">
-            <div id="myId" data-i18n="settings.connecting" data-i18n-title="sidebar.copyIdTitle" title="Click to copy your ID">connecting…</div>
-            <button id="copyBtn" class="secondary" data-i18n="settings.copy">Copy</button>
-          </div>
+      <div id="voicePanel" class="voicePanel" hidden>
+        <div id="voiceInfo" class="voiceInfo" title="Open call" data-i18n-title="voice.openCall">
+          <span class="voiceStatus"><span id="voiceStatusIcon"></span><span id="voiceStatusText"></span></span>
+          <span id="voiceSub" class="voiceSub"></span>
         </div>
-        <div class="addFriendStep">
-          <p class="hint" data-i18n="sidebar.orPasteTheirs">…or paste theirs here:</p>
-          <div class="row">
-            <input type="text" id="peerIdInput" data-i18n-placeholder="sidebar.theirId" placeholder="their ID">
-            <button id="callBtn" data-i18n="sidebar.add">Add</button>
-          </div>
+        <button id="panelShareBtn" class="iconBtn shareScreenTrigger"></button>
+        <button id="panelLeaveBtn" class="iconBtn" title="Leave call" data-i18n-title="main.leaveCall"></button>
+      </div>
+
+      <div class="userPanel">
+        <div id="userInfo" class="userInfo" title="Click to copy your ID" data-i18n-title="sidebar.copyIdTitle">
+          <span class="avatarWrap">
+            <div class="avatar" id="profileAvatar" style="background:#3f7ff5;">?</div>
+            <span class="dot online"></span>
+          </span>
+          <span class="userText">
+            <span id="myName" class="profileName">—</span>
+            <span id="myActivityEl" class="activity" hidden></span>
+            <span id="myTag" class="userSub"></span>
+          </span>
         </div>
-      </div>
-
-      <div class="card friendsCard" id="pendingCard" hidden>
-        <label data-i18n="sidebar.pending">Pending</label>
-        <ul id="pendingList"></ul>
-      </div>
-
-      <div class="card friendsCard">
-        <label id="friendsCountLabel">Friends</label>
-        <ul id="peerList"></ul>
+        <button id="panelMuteBtn" class="iconBtn" title="Mute" data-i18n-title="main.mute"></button>
+        <button id="settingsBtn" class="iconBtn" title="Settings" data-i18n-title="settings.title"></button>
       </div>
     </aside>
 
-    <main class="main">
-      <div class="mainScroll">
-        <div id="incomingCalls"></div>
-        <div id="friendRequests"></div>
-        <div class="sectionTitle" id="callTitle" hidden></div>
-        <div class="callParticipants" id="callParticipants"></div>
-        <div id="screenGrid"></div>
-        <!-- Filled in by renderCallPanel — what it says depends on whether you
-             have any friends yet, or whether the mic failed. -->
-        <div class="emptyState" id="callEmptyState"></div>
+    <main class="main" id="main" data-view="friends">
+      <header class="mainHeader">
+        <div class="headerSection" data-for="friends">
+          <span class="headerIcon" id="friendsHeaderIcon"></span>
+          <span class="headerTitle" data-i18n="nav.friends">Friends</span>
+          <span class="headerDivider"></span>
+          <nav class="friendsTabs">
+            <button class="friendsTab" data-tab="online" data-i18n="friends.online">Online</button>
+            <button class="friendsTab" data-tab="all" data-i18n="friends.all">All</button>
+            <button class="friendsTab" data-tab="pending"><span data-i18n="sidebar.pending">Pending</span><span id="pendingTabBadge" class="navBadge" hidden></span></button>
+            <button class="friendsTab addTab" data-tab="add" data-i18n="friends.add">Add Friend</button>
+          </nav>
+        </div>
+        <div class="headerSection" data-for="dm">
+          <span class="headerIcon" id="dmHeaderIcon"></span>
+          <span class="headerTitle" id="chatHeaderName"></span>
+          <span class="headerStatus" id="dmHeaderStatus"></span>
+          <span class="headerSpacer"></span>
+          <button id="dmCallBtn" class="iconBtn headerBtn"></button>
+        </div>
+        <div class="headerSection" data-for="call">
+          <span class="headerIcon" id="callHeaderIcon"></span>
+          <span class="headerTitle" id="callTitle" hidden></span>
+          <span class="headerSpacer"></span>
+          <button id="callChatToggleBtn" class="iconBtn headerBtn" title="Call chat" data-i18n-title="chat.title"></button>
+        </div>
+      </header>
+
+      <div id="noMicBar" class="noticeBar" hidden></div>
+
+      <div class="mainBody">
+        <section class="friendsView">
+          <div id="friendsSearchRow" class="friendsSearchRow">
+            <input type="text" id="friendsSearch" class="searchInput" data-i18n-placeholder="friends.search" placeholder="Search">
+          </div>
+          <div id="friendsListLabel" class="friendsListLabel"></div>
+          <ul id="peerList" class="friendsList"></ul>
+          <ul id="pendingList" class="friendsList" hidden></ul>
+          <div id="friendsEmpty" class="friendsEmpty" hidden></div>
+          <div id="addFriendPane" class="addFriendPane" hidden>
+            <h2 data-i18n="friends.addTitle">Add Friend</h2>
+            <p class="hint" data-i18n="friends.addDesc">Paste a friend's patycord ID.</p>
+            <div class="addFriendBox">
+              <input type="text" id="peerIdInput" data-i18n-placeholder="friends.addPlaceholder" placeholder="Paste their ID">
+              <button id="sendRequestBtn" data-i18n="friends.sendRequest" disabled>Send Friend Request</button>
+            </div>
+            <div class="addFriendDivider"></div>
+            <h3 data-i18n="friends.yourId">Your ID</h3>
+            <p class="hint" data-i18n="friends.yourIdDesc">Send this to a friend so they can add you.</p>
+            <div class="myIdBox">
+              <div id="myId" data-i18n="settings.connecting" data-i18n-title="sidebar.copyIdTitle" title="Click to copy your ID">connecting…</div>
+              <button id="copyBtn" class="secondary" data-i18n="settings.copy">Copy</button>
+            </div>
+            <div id="welcomeSteps" class="welcomeSteps"></div>
+          </div>
+        </section>
+
+        <section class="callStage">
+          <div class="stageScroll">
+            <div id="screenGrid"></div>
+            <div class="callParticipants" id="callParticipants"></div>
+          </div>
+          <div class="callControls">
+            <button id="muteBtn" class="dockBtn" title="Mute" data-i18n-title="main.mute"></button>
+            <button id="shareScreenBtn" class="dockBtn shareScreenTrigger" title="Share screen" data-i18n-title="main.shareScreen"></button>
+            <button id="leaveCallBtn" class="dockBtn leave" title="Leave call" data-i18n-title="main.leaveCall"></button>
+          </div>
+        </section>
+
+        <aside class="chatPane">
+          <div class="chatPaneHeader"><span id="chatPaneIcon"></span><span data-i18n="chat.title">Call chat</span></div>
+          <div class="chatMessages" id="chatMessages"></div>
+          <div class="chatInputRow">
+            <div class="chatInputBox">
+              <input type="text" id="chatInput" data-i18n-placeholder="chat.placeholder" placeholder="Message" maxlength="2000">
+              <button id="chatSendBtn" class="iconBtn" title="Send" data-i18n-title="chat.send"></button>
+            </div>
+          </div>
+        </aside>
       </div>
 
       <div id="logPanel" hidden>
         <div id="status"></div>
       </div>
-
-      <div id="dock">
-        <button id="muteBtn" class="dockBtn" title="Mute" data-i18n-title="main.mute" hidden></button>
-        <button id="shareScreenBtn" class="dockBtn" title="Share screen" data-i18n-title="main.shareScreen" hidden></button>
-        <button id="leaveCallBtn" class="dockBtn leave" title="Leave call" data-i18n-title="main.leaveCall" hidden></button>
-        <button id="logToggleBtn" class="dockBtn" title="Activity log" data-i18n-title="main.activityLog"></button>
-      </div>
     </main>
-
-    <aside class="chatPanel" id="chatPanel" hidden>
-      <div class="chatHeader">
-        <span id="chatHeaderName" class="chatHeaderName"></span>
-        <button id="chatCloseBtn" class="ghost removeBtn" title="Close" data-i18n-title="chat.close">×</button>
-      </div>
-      <div class="chatMessages" id="chatMessages"></div>
-      <div class="chatInputRow">
-        <input type="text" id="chatInput" data-i18n-placeholder="chat.placeholder" placeholder="Message" maxlength="2000">
-        <button id="chatSendBtn" data-i18n="chat.send">Send</button>
-      </div>
-    </aside>
   </div>
+
+  <div id="incomingCalls"></div>
 
   <script src="peerjs.min.js"></script>
   <script type="module" src="renderer.js"></script>
