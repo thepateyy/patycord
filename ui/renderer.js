@@ -1,5 +1,6 @@
 import { t, getLanguage, setLanguage, applyStaticTranslations, LANGUAGES } from './i18n.js';
 import { enhanceSelect } from './select.js';
+import { openMenu, confirmDialog, promptDialog } from './menus.js';
 import { loadIdentity, idForKey, isKeyDerivedId, newNonce, signChallenge, verifyChallenge } from './identity.js';
 
 const myIdEl = document.getElementById('myId');
@@ -33,6 +34,7 @@ const sendRequestBtn = document.getElementById('sendRequestBtn');
 const peerListEl = document.getElementById('peerList');
 const pendingListEl = document.getElementById('pendingList');
 const muteBtn = document.getElementById('muteBtn');
+const deafenBtn = document.getElementById('deafenBtn');
 const shareScreenBtn = document.getElementById('shareScreenBtn');
 const leaveCallBtn = document.getElementById('leaveCallBtn');
 const logToggleBtn = document.getElementById('logToggleBtn');
@@ -62,6 +64,7 @@ const voiceSubEl = document.getElementById('voiceSub');
 const panelShareBtn = document.getElementById('panelShareBtn');
 const panelLeaveBtn = document.getElementById('panelLeaveBtn');
 const panelMuteBtn = document.getElementById('panelMuteBtn');
+const panelDeafenBtn = document.getElementById('panelDeafenBtn');
 const userInfoEl = document.getElementById('userInfo');
 const myTagEl = document.getElementById('myTag');
 const friendsTabBtns = document.querySelectorAll('.friendsTab');
@@ -77,6 +80,11 @@ const dmHeaderStatusEl = document.getElementById('dmHeaderStatus');
 const dmCallBtn = document.getElementById('dmCallBtn');
 const callChatToggleBtn = document.getElementById('callChatToggleBtn');
 const chatHeaderNameEl = document.getElementById('chatHeaderName');
+const attachBtn = document.getElementById('attachBtn');
+const fileInputEl = document.getElementById('fileInput');
+const typingIndicatorEl = document.getElementById('typingIndicator');
+const dropOverlayEl = document.getElementById('dropOverlay');
+const chatPaneEl = document.querySelector('.chatPane');
 const chatMessagesEl = document.getElementById('chatMessages');
 const chatInputEl = document.getElementById('chatInput');
 const chatSendBtn = document.getElementById('chatSendBtn');
@@ -99,6 +107,8 @@ const appVersionEl = document.getElementById('appVersion');
 let localStream = null; // raw mic capture — mute toggles this track's .enabled
 let processedStream = null; // what actually goes out over WebRTC (RNNoise'd, if available)
 let muted = false;
+let deafened = false; // can't hear anyone, and muted too — see setDeafened
+let mutedBeforeDeafen = false;
 let peer = null;
 let screenStream = null;
 let presenceProbeInterval = null;
@@ -116,6 +126,10 @@ const pendingCalls = new Map(); // peerId -> MediaConnection, awaiting Accept/De
 const outgoingScreenCalls = new Map(); // peerId -> MediaConnection, us sharing our screen to them
 const screenTiles = new Map(); // peerId -> { call, tileEl }, someone else's screen we're viewing
 const remoteNames = new Map(); // peerId -> name they told us about themselves, live
+const statusByPeer = new Map(); // peerId -> 'dnd' while a friend has Do Not Disturb on
+const voiceStateByPeer = new Map(); // peerId -> { muted, deafened }, for whoever's in the call with us
+const peerCaps = new Map(); // peerId -> Set of features their version supports, from their hello (see MY_CAPS)
+const typingUntil = new Map(); // peerId -> when their "typing…" runs out
 const pendingFriendRequests = new Map(); // peerId -> name, awaiting Accept/Decline
 // Populated for real by initSecureStore() before anything else runs (see the bottom
 // of this file) — empty here only because loadChatHistories()/loadPendingMessages()
@@ -199,6 +213,17 @@ const ICONS = {
   at: icon('<circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/>'),
   send: icon('<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>'),
   signal: icon('<path d="M2 20h.01"/><path d="M7 20v-4"/><path d="M12 20v-8"/><path d="M17 20V8"/><path d="M22 4v16"/>'),
+  headphones: icon('<path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>'),
+  headphonesOff: icon('<path d="M3 18v-6a9 9 0 0 1 14.5-7.1"/><path d="M21 12v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/><line x1="2" y1="2" x2="22" y2="22"/>'),
+  pencil: icon('<path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>'),
+  trash: icon('<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>'),
+  plusCircle: icon('<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/>'),
+  file: icon('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>'),
+  download: icon('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>'),
+  copy: icon('<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'),
+  tag: icon('<path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>'),
+  userMinus: icon('<path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="23" y1="11" x2="17" y2="11"/>'),
+  upload: icon('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>'),
   maximize: icon('<path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>'),
   minimize: icon('<path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/>'),
 };
@@ -371,8 +396,33 @@ function appInBackground() {
 }
 
 function notifyDesktop(title, body) {
-  if (!getDesktopNotifications() || !appInBackground()) return;
+  if (!getDesktopNotifications() || getDnd() || !appInBackground()) return;
   tauriInvoke('notify', { title, body }).catch(() => {});
+}
+
+// --- Do Not Disturb ----------------------------------------------------------
+// No ringing, message sounds, taskbar flashing or Windows notifications — an
+// incoming call still pops up, silently — and friends see a red dot.
+
+function getDnd() {
+  return localStorage.getItem('patycord.status') === 'dnd';
+}
+
+function setDnd(on) {
+  if (on) localStorage.setItem('patycord.status', 'dnd');
+  else localStorage.removeItem('patycord.status');
+  if (on) stopRinging();
+  else if (pendingCalls.size) startRinging();
+  sendToFriends({ type: 'status', status: outgoingStatus() });
+  renderMyStatus();
+}
+
+function outgoingStatus() {
+  return getDnd() ? 'dnd' : 'online';
+}
+
+function renderMyStatus() {
+  userInfoEl.querySelector('.dot').className = `dot ${getDnd() ? 'dnd' : 'online'}`;
 }
 
 // --- tray ------------------------------------------------------------------
@@ -493,9 +543,11 @@ function loadChatHistories() {
   return new Map(Object.entries(raw).filter(([id, msgs]) => id && Array.isArray(msgs)));
 }
 
+// Files and images are deliberately left out: they only live in memory, for as
+// long as patycord is open (see "files" below).
 function saveChatHistories() {
   secureStore.chatHistories = Object.fromEntries(
-    [...chatHistories].map(([id, msgs]) => [id, msgs.slice(-CHAT_HISTORY_LIMIT)])
+    [...chatHistories].map(([id, msgs]) => [id, msgs.filter((m) => !m.file).slice(-CHAT_HISTORY_LIMIT)])
   );
   saveSecureStore();
 }
@@ -607,10 +659,13 @@ function setPeerActivity(id, activity) {
 // to — friends we're mid-call or mid-chat with get it instantly; everyone else picks
 // it up on their next presence probe (see probePresence).
 function broadcastActivity() {
+  sendToFriends({ type: 'activity', activity: outgoingActivity() });
+}
+
+// To every friend we have a live, identity-checked connection to.
+function sendToFriends(msg) {
   for (const [id, conn] of dataConnections) {
-    if (conn.open && isTrusted(conn) && acceptedFriends().some((f) => f.id === id)) {
-      conn.send({ type: 'activity', activity: outgoingActivity() });
-    }
+    if (conn.open && isTrusted(conn) && acceptedFriends().some((f) => f.id === id)) conn.send(msg);
   }
 }
 
@@ -681,6 +736,13 @@ function playMuteSound(isMuted) {
 function playScreenShareSound(isSharing) {
   if (isSharing) { playTone(520, 80); playTone(780, 120, { delayMs: 80 }); }
   else playTone(400, 100);
+}
+
+// A soft two-note blip for a message you're not looking at right now.
+function playMessageSound() {
+  if (getDnd()) return;
+  playTone(880, 90, { gain: 0.09 });
+  playTone(1320, 140, { gain: 0.09, delayMs: 85 });
 }
 
 // Repeating two-tone ring for as long as at least one call is waiting on us
@@ -821,10 +883,15 @@ function requestRemoveFriend(id) {
   renderPeerList();
 }
 
-function friendStatusHtml({ inCall, connected, isOnline, activity }) {
+function friendStatusHtml({ inCall, connected, isOnline, activity, dnd }) {
   if (inCall) return `<span class="status online">${connected ? t('status.inCall') : t('status.calling')}</span>`;
   if (activity) return `<span class="activity">${escapeHtml(t('friend.playing', { name: activity }))}</span>`;
+  if (dnd) return `<span class="status dnd">${t('status.dnd')}</span>`;
   return `<span class="status${isOnline ? ' online' : ''}">${isOnline ? t('status.online') : t('status.offline')}</span>`;
+}
+
+function dotHtml({ isOnline, dnd }) {
+  return `<span class="dot${dnd ? ' dnd' : isOnline ? ' online' : ''}"></span>`;
 }
 
 function badgeText(n) {
@@ -847,6 +914,7 @@ function friendRows() {
     return {
       id: friend.id, name: nameFor(friend), inCall, connected, isOnline,
       activity: isOnline ? activityByPeer.get(friend.id) : null,
+      dnd: isOnline && statusByPeer.get(friend.id) === 'dnd',
       unread: unreadCounts.get(friend.id) || 0,
     };
   });
@@ -858,6 +926,7 @@ function friendRows() {
 
 function renderPeerList() {
   syncCallState(); // first, so a call starting or ending switches the view before anything draws
+  renderTyping();
   const rows = friendRows();
   renderDmList(rows);
   renderRail(rows);
@@ -880,13 +949,14 @@ function renderDmList(rows) {
     li.className = 'dmRow' + (r.id === openChatPeerId ? ' active' : '') + (r.unread ? ' unread' : '') + (r.isOnline ? '' : ' offline');
     li.title = tagFor(r.id, r.name);
     li.innerHTML = `
-      <span class="avatarWrap">${avatarHtml(r.id, r.name)}<span class="dot${r.isOnline ? ' online' : ''}"></span></span>
+      <span class="avatarWrap">${avatarHtml(r.id, r.name)}${dotHtml(r)}</span>
       <span class="who-text">
         <span class="name">${escapeHtml(r.name)}</span>
         ${friendStatusHtml(r)}
       </span>
       ${r.unread ? `<span class="unreadBadge">${badgeText(r.unread)}</span>` : ''}`;
     li.addEventListener('click', () => openChatWith(r.id));
+    li.addEventListener('contextmenu', (e) => showFriendMenu(e, r.id));
     dmListEl.appendChild(li);
   }
 }
@@ -906,6 +976,7 @@ function renderRail(rows) {
     btn.title = r.name;
     btn.innerHTML = `${avatarHtml(r.id, r.name)}<span class="railBadge">${badgeText(r.unread)}</span>`;
     btn.addEventListener('click', () => openChatWith(r.id));
+    btn.addEventListener('contextmenu', (e) => showFriendMenu(e, r.id));
     railUnreadEl.appendChild(btn);
   }
 }
@@ -944,16 +1015,16 @@ function renderFriendsPage(rows) {
   renderFriendsEmpty(empty);
 }
 
-function friendRowEl({ id, name, inCall, connected, isOnline, activity, unread }) {
+function friendRowEl({ id, name, inCall, connected, isOnline, activity, dnd, unread }) {
   const confirming = confirmRemoveId === id;
   const li = document.createElement('li');
   li.className = 'friendRow';
   li.innerHTML = `
     <span class="who">
-      <span class="avatarWrap">${avatarHtml(id, name)}<span class="dot${isOnline ? ' online' : ''}"></span></span>
+      <span class="avatarWrap">${avatarHtml(id, name)}${dotHtml({ isOnline, dnd })}</span>
       <span class="who-text">
         <span class="nameLine"><span class="name">${escapeHtml(name)}</span><span class="tagHash">#${escapeHtml(id.slice(-4).toUpperCase())}</span></span>
-        ${friendStatusHtml({ inCall, connected, isOnline, activity })}
+        ${friendStatusHtml({ inCall, connected, isOnline, activity, dnd })}
       </span>
     </span>
     <span class="actions">
@@ -963,6 +1034,7 @@ function friendRowEl({ id, name, inCall, connected, isOnline, activity, unread }
       <button class="roundBtn removeBtn${confirming ? ' confirm' : ''}" title="${t('sidebar.remove')}">${confirming ? t('sidebar.removeConfirm') : ICONS.x}</button>
     </span>`;
   li.addEventListener('click', (e) => { if (!e.target.closest('button')) openChatWith(id); });
+  li.addEventListener('contextmenu', (e) => showFriendMenu(e, id));
   li.querySelector('.chatToggleBtn')?.addEventListener('click', () => openChatWith(id));
   li.querySelector('.callToggleBtn')?.addEventListener('click', () => {
     if (calls.has(id)) hangUp(id);
@@ -1053,7 +1125,7 @@ function renderDmHeader(rows) {
   const id = openChatPeerId;
   const row = rows.find((r) => r.id === id);
   chatHeaderNameEl.textContent = friendName(id);
-  dmHeaderStatusEl.innerHTML = row ? `<span class="dot${row.isOnline ? ' online' : ''}"></span>${friendStatusHtml(row)}` : '';
+  dmHeaderStatusEl.innerHTML = row ? `${dotHtml(row)}${friendStatusHtml(row)}` : '';
   const inCall = calls.has(id);
   dmCallBtn.hidden = !inCall && !row?.isOnline;
   dmCallBtn.classList.toggle('inCall', inCall);
@@ -1105,9 +1177,9 @@ function renderCallPanel() {
     me.innerHTML = `
       ${avatarHtml(getMyPersistentId(), getMyUsername())}
       <span class="tileLabel">
-        ${muted ? ICONS.micOff : ''}
+        ${voiceIconsHtml({ muted, deafened })}
         <span class="pname">${escapeHtml(getMyUsername())}</span>
-        <span class="sub">${muted ? t('main.muted') : pushToTalkActive() ? t('main.pttHint', { key: escapeHtml(getPttKey().label) }) : t('main.you')}</span>
+        <span class="sub">${deafened ? t('main.deafened') : muted ? t('main.muted') : pushToTalkActive() ? t('main.pttHint', { key: escapeHtml(getPttKey().label) }) : t('main.you')}</span>
       </span>`;
     callParticipantsEl.appendChild(me);
   }
@@ -1121,8 +1193,11 @@ function renderCallPanel() {
     div.innerHTML = `
       ${avatarHtml(id, name)}
       <span class="tileLabel">
+        ${voiceIconsHtml(voiceStateByPeer.get(id) || {})}
         <span class="pname">${escapeHtml(name)}</span>
-        ${entry.audioEl ? '' : `<span class="sub">${t('main.calling')}</span>`}
+        ${!entry.audioEl ? `<span class="sub">${t('main.calling')}</span>`
+          : voiceStateByPeer.get(id)?.deafened ? `<span class="sub">${t('main.deafened')}</span>`
+          : voiceStateByPeer.get(id)?.muted ? `<span class="sub">${t('main.muted')}</span>` : ''}
       </span>
       ${entry.audioEl ? `<button class="volumeBtn" title="${t('main.volume')}"></button>` : ''}`;
     if (entry.audioEl) {
@@ -1143,11 +1218,50 @@ function renderCallPanel() {
   renderView();
 }
 
+function voiceIconsHtml({ muted: isMuted, deafened: isDeafened }) {
+  if (isDeafened) return `<span class="voiceIcons">${ICONS.headphonesOff}</span>`;
+  return isMuted ? `<span class="voiceIcons">${ICONS.micOff}</span>` : '';
+}
+
 function renderMuteButtons() {
   for (const btn of [muteBtn, panelMuteBtn]) {
     btn.title = muted ? t('main.unmute') : t('main.mute');
     btn.classList.toggle('active', muted);
     btn.innerHTML = muted ? ICONS.micOff : ICONS.mic;
+  }
+  for (const btn of [deafenBtn, panelDeafenBtn]) {
+    btn.title = deafened ? t('main.undeafen') : t('main.deafen');
+    btn.classList.toggle('active', deafened);
+    btn.innerHTML = deafened ? ICONS.headphonesOff : ICONS.headphones;
+  }
+}
+
+// Deafening silences everyone else (calls and screen-share audio) and mutes
+// you too, like Discord; undeafening puts your mute back how it was.
+function setDeafened(on) {
+  if (on === deafened) return;
+  deafened = on;
+  if (on) { mutedBeforeDeafen = muted; muted = true; }
+  else muted = mutedBeforeDeafen;
+  applyTransmitState();
+  applyDeafen();
+  renderMuteButtons();
+  playMuteSound(on);
+  renderCallPanel();
+  sendVoiceState();
+}
+
+function applyDeafen() {
+  for (const entry of calls.values()) if (entry.audioEl) entry.audioEl.muted = deafened;
+  for (const tile of screenTiles.values()) tile.videoEl.muted = deafened;
+}
+
+// Lets everyone in the call show whether we're muted or deafened.
+function sendVoiceState(onlyTo = null) {
+  const msg = { type: 'voice-state', muted, deafened };
+  for (const id of onlyTo ? [onlyTo] : calls.keys()) {
+    const conn = dataConnections.get(id);
+    if (conn?.open && isTrusted(conn)) conn.send(msg);
   }
 }
 
@@ -1338,6 +1452,7 @@ function attachRemoteStream(peerId, stream) {
   applySpeakerTo(audio);
   audio.srcObject = stream;
   audio.autoplay = true;
+  audio.muted = deafened;
   const entry = calls.get(peerId) || {};
   entry.audioEl = audio;
   if (audioCtx) {
@@ -1348,6 +1463,7 @@ function attachRemoteStream(peerId, stream) {
   calls.set(peerId, entry);
   updateOutgoingRingState();
   renderPeerList();
+  sendVoiceState(peerId);
 }
 
 function hangUp(peerId) {
@@ -1370,6 +1486,7 @@ function removeCall(peerId) {
   entry?.analyserSource?.disconnect();
   speakingAnalysers.delete(peerId);
   speakingNow.delete(peerId);
+  voiceStateByPeer.delete(peerId);
   calls.delete(peerId);
   updateOutgoingRingState();
   renderPeerList();
@@ -1511,8 +1628,12 @@ function handleIncomingDataConnection(conn) {
 
 const IDENTITY_TIMEOUT_MS = 10000;
 
+// What this version understands beyond plain messages, so newer features are
+// only ever sent to someone who'll know what to do with them.
+const MY_CAPS = ['edit', 'files', 'typing', 'status', 'voice'];
+
 function myHello(conn) {
-  return { type: 'hello', name: getMyUsername(), acks: true, key: myIdentity?.publicKey, nonce: conn.myNonce };
+  return { type: 'hello', name: getMyUsername(), acks: true, key: myIdentity?.publicKey, nonce: conn.myNonce, caps: MY_CAPS };
 }
 
 function isTrusted(conn) {
@@ -1607,6 +1728,7 @@ function settleIdentity(conn, id, result, reason = '') {
   const hello = conn.helloMsg;
   learnName(id, typeof hello.name === 'string' ? hello.name.slice(0, 40) : '');
   ackSupport.set(id, hello.acks === true);
+  peerCaps.set(id, new Set(Array.isArray(hello.caps) ? hello.caps.filter((c) => typeof c === 'string').slice(0, 20) : []));
   if (result === 'verified') {
     pinKey(id, conn.theirKey);
   } else if (!legacyLogged.has(id)) {
@@ -1618,7 +1740,10 @@ function settleIdentity(conn, id, result, reason = '') {
     // for our own (deliberately infrequent, for offline friends) sweep to notice.
     markOnline(id);
     if ('activity' in hello) setPeerActivity(id, hello.activity); // older versions send it in their hello
-    if (conn.open) conn.send({ type: 'activity', activity: outgoingActivity() });
+    if (conn.open) {
+      conn.send({ type: 'activity', activity: outgoingActivity() });
+      conn.send({ type: 'status', status: outgoingStatus() });
+    }
   }
   conn.onTrusted?.();
   for (const msg of backlog) handleDataMessage(id, msg);
@@ -1704,18 +1829,40 @@ function handleDataMessage(fromId, msg) {
       const isNew = addChatMessage(fromId, fromId, text, { ts: wireTimestamp(msg.ts), id });
       // Confirm even a duplicate — it means our earlier confirmation got lost.
       if (id) dataConnections.get(fromId)?.send({ type: 'chat-ack', id });
-      if (isNew && fromId !== openChatPeerId) toast(t('toast.newMessage', { name: friendName(fromId) }), 'info');
-      if (isNew) notifyDesktop(friendName(fromId), text.length > 140 ? text.slice(0, 140) + '…' : text);
+      if (typingUntil.delete(fromId)) renderTyping();
+      if (isNew) announceMessage(fromId, text);
     } else {
       // 'call' scope (or unmarked, from an older client) — only from someone actually in the call with us.
       if (!calls.has(fromId)) return;
       addCallChatMessage(fromId, text, wireTimestamp(msg.ts));
       // Only worth a toast if call chat isn't the thing currently on screen.
       if (currentView !== 'call') toast(t('toast.newCallMessage', { name: friendName(fromId) }), 'info');
+      if (currentView !== 'call' || appInBackground()) playMessageSound();
     }
   } else if (msg.type === 'chat-ack') {
     const id = wireMessageId(msg.id);
     if (id) markDelivered(fromId, [id]);
+  } else if (msg.type === 'chat-edit' || msg.type === 'chat-delete') {
+    if (!isFriend(fromId)) return;
+    applyRemoteEdit(fromId, msg);
+    const id = wireMessageId(msg.id);
+    if (id) dataConnections.get(fromId)?.send({ type: 'chat-ack', id });
+  } else if (msg.type === 'typing') {
+    if (!isFriend(fromId)) return;
+    typingUntil.set(fromId, Date.now() + TYPING_SHOWN_MS);
+    renderTyping();
+    setTimeout(renderTyping, TYPING_SHOWN_MS + 100);
+  } else if (msg.type === 'status') {
+    if (!isFriend(fromId)) return;
+    if (msg.status === 'dnd') statusByPeer.set(fromId, 'dnd');
+    else statusByPeer.delete(fromId);
+    scheduleRenderPeerList();
+  } else if (msg.type === 'voice-state') {
+    if (!calls.has(fromId)) return;
+    voiceStateByPeer.set(fromId, { muted: msg.muted === true, deafened: msg.deafened === true });
+    renderCallPanel();
+  } else if (msg.type === 'file-start' || msg.type === 'file-chunk') {
+    receiveFilePart(fromId, msg);
   } else if (msg.type === 'friend-request') {
     handleFriendRequest(fromId, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
   } else if (msg.type === 'friend-accept') {
@@ -1769,7 +1916,11 @@ const GROUP_WINDOW_MS = 7 * 60 * 1000;
 // `pending` marks one of our own DMs that hasn't been confirmed delivered yet.
 // Like Discord, a run of messages from the same person a few minutes apart
 // shares one avatar and name, and a new day gets a divider.
-function renderChatMessage({ fromId, text, ts, id }, { pending = false } = {}) {
+// `pending` marks one of our own DMs that hasn't been confirmed delivered yet.
+// Like Discord, a run of messages from the same person a few minutes apart
+// shares one avatar and name, and a new day gets a divider.
+function renderChatMessage(entry, { pending = false } = {}) {
+  const { fromId, ts, id } = entry;
   const isMe = fromId === peer?.id;
   const displayName = isMe ? getMyUsername() || t('chat.you') : friendName(fromId);
   const last = chatMessagesEl.lastElementChild;
@@ -1789,15 +1940,66 @@ function renderChatMessage({ fromId, text, ts, id }, { pending = false } = {}) {
   if (id) div.dataset.msgId = id;
   if (pending) div.title = t('chat.notDelivered');
   const time = ts ? new Date(ts).toLocaleTimeString(getLanguage(), { hour: '2-digit', minute: '2-digit' }) : '';
+  // Your own DMs can be edited (text) and deleted — not call chat, which isn't kept.
+  const actions = isMe && id && currentView === 'dm' ? `
+    <div class="msgActions">
+      ${entry.file ? '' : `<button class="iconBtn editMsgBtn" title="${t('chat.edit')}">${ICONS.pencil}</button>`}
+      <button class="iconBtn deleteMsgBtn" title="${t('chat.delete')}">${ICONS.trash}</button>
+    </div>` : '';
   div.innerHTML = grouped
-    ? `<span class="hoverTime">${time}</span><span class="text">${escapeHtml(text)}</span>`
+    ? `<span class="hoverTime">${time}</span><div class="msgBody">${messageBodyHtml(entry)}</div>${actions}`
     : `${avatarHtml(isMe ? getMyPersistentId() : fromId, displayName)}
       <div class="msgBody">
         <div class="msgHead"><span class="msgAuthor">${escapeHtml(displayName)}</span><span class="time">${formatChatTime(ts)}</span></div>
-        <span class="text">${escapeHtml(text)}</span>
-      </div>`;
+        ${messageBodyHtml(entry)}
+      </div>${actions}`;
   chatMessagesEl.appendChild(div);
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+}
+
+// escapeHtml leaves quotes alone, which is fine for text but not inside an attribute.
+function escapeAttr(str) {
+  return escapeHtml(str).replace(/"/g, '&quot;');
+}
+
+// Plain http(s) links become clickable (they open in your browser — see
+// openExternal). Runs on already-escaped text, and the pattern can't match a
+// quote or angle bracket, so a link can't break out of its own tag.
+const LINK_PATTERN = /\bhttps?:\/\/[^\s<>"']+/gi;
+function linkify(escapedText) {
+  return escapedText.replace(LINK_PATTERN, (match) => {
+    let url = match;
+    let trailing = '';
+    while (/[.,;:!?)\]]$/.test(url)) { trailing = url.slice(-1) + trailing; url = url.slice(0, -1); }
+    return `<a class="msgLink" href="${url}" title="${url}">${url}</a>${trailing}`;
+  });
+}
+
+function messageBodyHtml(entry) {
+  if (entry.file) return fileHtml(entry.file);
+  return `<span class="text">${linkify(escapeHtml(entry.text))}${entry.edited ? `<span class="editedMark">(${t('chat.edited')})</span>` : ''}</span>`;
+}
+
+function fileHtml(file) {
+  const done = file.state === 'done' && file.url;
+  if (done && file.preview) {
+    return `<img class="msgImage" src="${file.url}" alt="${escapeAttr(file.name)}" title="${escapeAttr(file.name)}">
+      <div class="ephemeralNote">${t('chat.ephemeral')}</div>`;
+  }
+  const meta = file.state === 'failed' ? `<span class="fileMeta failed">${t('chat.fileFailed')}</span>`
+    : done ? `<span class="fileMeta">${formatBytes(file.size)} · ${t('chat.ephemeral')}</span>`
+    : `<span class="fileProgress"><span style="width:${Math.round(file.progress * 100)}%"></span></span>`;
+  return `<div class="fileCard">
+      ${ICONS.file}
+      <div class="fileInfo"><span class="fileName" title="${escapeAttr(file.name)}">${escapeHtml(file.name)}</span>${meta}</div>
+      ${done ? `<a class="iconBtn downloadBtn" href="${file.url}" download="${escapeAttr(file.name)}" title="${t('chat.download')}">${ICONS.download}</a>` : ''}
+    </div>`;
+}
+
+function formatBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function isQueued(peerId, id) {
@@ -1847,13 +2049,17 @@ function flushPendingMessages(peerId) {
   const conn = trustedConn(peerId);
   const queue = pendingMessages.get(peerId);
   if (!conn || !queue?.length || !ackSupport.has(peerId)) return;
-  for (const message of queue) conn.send(message);
+  // An older version would never confirm an edit or delete it doesn't understand.
+  const unsupported = peerCaps.get(peerId)?.has('edit') ? [] : queue.filter((m) => m.type === 'chat-edit' || m.type === 'chat-delete');
+  if (unsupported.length) markDelivered(peerId, unsupported.map((m) => m.id));
+  const toSend = queue.filter((m) => !unsupported.includes(m));
+  for (const message of toSend) conn.send(message);
   if (!ackSupport.get(peerId)) {
-    markDelivered(peerId, queue.map((m) => m.id));
+    markDelivered(peerId, toSend.map((m) => m.id));
     return;
   }
   // Pre-acknowledgement queue entries have no id to be confirmed by — send-and-forget those.
-  const unconfirmable = queue.filter((m) => !m.id);
+  const unconfirmable = toSend.filter((m) => !m.id);
   if (unconfirmable.length) markDelivered(peerId, unconfirmable.map(() => undefined));
 }
 
@@ -1884,11 +2090,18 @@ function addCallChatMessage(fromId, text, ts = Date.now()) {
 }
 
 // The state change alone, without a render — see openChatWith.
+// The state change alone, without a render — see openChatWith.
 function enterDm(peerId) {
   ensureDataConnection(peerId); // independent of any call — opens on demand
   openChatPeerId = peerId;
   currentView = 'dm';
   setUnread(peerId, 0);
+  fillDmThread(peerId);
+  chatInputEl.placeholder = t('dm.placeholder', { name: friendName(peerId) });
+  renderTyping();
+}
+
+function fillDmThread(peerId) {
   const name = friendName(peerId);
   chatMessagesEl.innerHTML = `
     <div class="chatIntro">
@@ -1900,7 +2113,16 @@ function enterDm(peerId) {
   for (const entry of chatHistories.get(peerId) || []) {
     renderChatMessage(entry, { pending: entry.fromId === peer?.id && isQueued(peerId, entry.id) });
   }
-  chatInputEl.placeholder = t('dm.placeholder', { name });
+}
+
+// Redraws the open DM thread after an edit, delete or finished file, keeping
+// your place in it unless you were already at the bottom.
+function rerenderThread() {
+  if (currentView !== 'dm') return;
+  const atBottom = chatMessagesEl.scrollHeight - chatMessagesEl.scrollTop - chatMessagesEl.clientHeight < 40;
+  const top = chatMessagesEl.scrollTop;
+  fillDmThread(openChatPeerId);
+  chatMessagesEl.scrollTop = atBottom ? chatMessagesEl.scrollHeight : top;
 }
 
 function openChatWith(peerId) {
@@ -1929,6 +2151,7 @@ function sendChatMessage() {
     queueMessage(peerId, message);
     addChatMessage(peerId, peer.id, text, { ts: message.ts, id: message.id }); // before the flush, so an old-client flush can un-dim it
     flushPendingMessages(peerId); // delivers now if already connected; otherwise on their next hello
+    lastTypingSentAt = 0; // so the next thing they start typing shows straight away
   } else if (currentView === 'call') {
     const ts = Date.now();
     for (const id of calls.keys()) dataConnections.get(id)?.send({ type: 'chat', scope: 'call', text, ts });
@@ -1937,6 +2160,338 @@ function sendChatMessage() {
     return;
   }
   chatInputEl.value = '';
+}
+
+// A DM (or file) that just arrived: toast if you're not looking at that
+// conversation, a sound if you're not looking at it or the window, and a
+// Windows notification if the window's in the background.
+function announceMessage(fromId, preview) {
+  const looking = fromId === openChatPeerId && !appInBackground();
+  if (fromId !== openChatPeerId) toast(t('toast.newMessage', { name: friendName(fromId) }), 'info');
+  if (!looking) playMessageSound();
+  notifyDesktop(friendName(fromId), preview.length > 140 ? preview.slice(0, 140) + '…' : preview);
+}
+
+// --- typing ----------------------------------------------------------------
+// A 'typing' ping at most every few seconds while you type in a DM; theirs
+// shows under the message box until it runs out or their message arrives.
+
+const TYPING_PING_MS = 3000;
+const TYPING_SHOWN_MS = 6000;
+let lastTypingSentAt = 0;
+
+function sendTyping() {
+  if (currentView !== 'dm' || !chatInputEl.value.trim() || Date.now() - lastTypingSentAt < TYPING_PING_MS) return;
+  const conn = trustedConn(openChatPeerId);
+  if (!conn || !peerCaps.get(openChatPeerId)?.has('typing')) return;
+  conn.send({ type: 'typing' });
+  lastTypingSentAt = Date.now();
+}
+
+function renderTyping() {
+  const typing = currentView === 'dm' && (typingUntil.get(openChatPeerId) || 0) > Date.now();
+  typingIndicatorEl.innerHTML = typing
+    ? `<span class="typingDots"><i></i><i></i><i></i></span><span>${t('chat.typing', { name: `<b>${escapeHtml(friendName(openChatPeerId))}</b>` })}</span>`
+    : '';
+}
+
+// --- editing and deleting your messages ------------------------------------
+// Both go to the other side like messages do — queued while they're offline,
+// re-sent until confirmed — unless the message itself hasn't gone out yet, in
+// which case the queued copy is simply changed or dropped.
+
+function startEditing(msgId) {
+  const entry = (chatHistories.get(openChatPeerId) || []).find((m) => m.id === msgId && m.fromId === peer?.id && !m.file);
+  const div = chatMessagesEl.querySelector(`.chatMsg[data-msg-id="${CSS.escape(msgId)}"]`);
+  if (!entry || !div || div.classList.contains('editing')) return;
+  div.classList.add('editing');
+  const textEl = div.querySelector('.text');
+  const box = document.createElement('div');
+  box.innerHTML = `<input type="text" class="msgEditInput" maxlength="2000"><div class="msgEditHint">${t('chat.editHint')}</div>`;
+  textEl.replaceWith(box);
+  const input = box.querySelector('input');
+  input.value = entry.text;
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); saveEdit(msgId, input.value); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); rerenderThread(); chatInputEl.focus(); }
+  });
+}
+
+function saveEdit(msgId, newText) {
+  const peerId = openChatPeerId;
+  const text = newText.trim();
+  if (!text) { rerenderThread(); requestDeleteMessage(msgId, false); return; }
+  const entry = (chatHistories.get(peerId) || []).find((m) => m.id === msgId && m.fromId === peer?.id);
+  if (!entry || entry.text === text) { rerenderThread(); chatInputEl.focus(); return; }
+  entry.text = text;
+  entry.edited = true;
+  saveChatHistories();
+  const queued = pendingMessages.get(peerId)?.find((m) => m.id === msgId);
+  if (queued) {
+    queued.text = text; // hasn't gone out yet — it'll just go out like this
+    savePendingMessages();
+  } else {
+    queueMessage(peerId, { type: 'chat-edit', id: crypto.randomUUID(), target: msgId, text, ts: Date.now() });
+    flushPendingMessages(peerId);
+  }
+  rerenderThread();
+  chatInputEl.focus();
+}
+
+async function requestDeleteMessage(msgId, skipConfirm) {
+  const peerId = openChatPeerId;
+  if (!skipConfirm) {
+    const ok = await confirmDialog({ title: t('chat.deleteTitle'), message: t('chat.deleteBody'), confirmLabel: t('chat.delete'), danger: true });
+    if (!ok) return;
+  }
+  deleteMessage(peerId, msgId);
+}
+
+function deleteMessage(peerId, msgId) {
+  const history = chatHistories.get(peerId) || [];
+  const index = history.findIndex((m) => m.id === msgId && m.fromId === peer?.id);
+  if (index < 0) return;
+  const [entry] = history.splice(index, 1);
+  if (entry.file) {
+    entry.file.cancelled = true; // stops a send that's still going
+    if (entry.file.url) URL.revokeObjectURL(entry.file.url);
+  }
+  saveChatHistories();
+  const queue = pendingMessages.get(peerId);
+  if (queue?.some((m) => m.id === msgId)) {
+    // Never went out — nothing to tell them.
+    const remaining = queue.filter((m) => m.id !== msgId);
+    if (remaining.length) pendingMessages.set(peerId, remaining);
+    else pendingMessages.delete(peerId);
+    savePendingMessages();
+  } else {
+    queueMessage(peerId, { type: 'chat-delete', id: crypto.randomUUID(), target: msgId });
+    flushPendingMessages(peerId);
+  }
+  if (peerId === openChatPeerId) rerenderThread();
+}
+
+// Only ever touches a message that same friend sent.
+function applyRemoteEdit(fromId, msg) {
+  const target = wireMessageId(msg.target);
+  const history = chatHistories.get(fromId) || [];
+  const index = target ? history.findIndex((m) => m.id === target && m.fromId === fromId) : -1;
+  if (index < 0) return;
+  if (msg.type === 'chat-edit') {
+    const text = typeof msg.text === 'string' ? msg.text.slice(0, 2000).trim() : '';
+    if (!text || history[index].file) return;
+    history[index].text = text;
+    history[index].edited = true;
+  } else {
+    const [entry] = history.splice(index, 1);
+    if (entry.file?.url) URL.revokeObjectURL(entry.file.url);
+  }
+  saveChatHistories();
+  if (fromId === openChatPeerId) rerenderThread();
+}
+
+// --- files -----------------------------------------------------------------
+// Sent straight to the friend over the same connection as messages, in
+// numbered chunks (the connection may deliver them out of order). Kept in
+// memory only — never saved, never queued for later — so they're gone once
+// patycord closes, on both ends, and can only be sent while the friend is
+// online. Images show inline; anything else gets a card with a download button.
+
+const MAX_FILE_BYTES = 100 * 1024 * 1024;
+const FILE_CHUNK_BYTES = 64 * 1024;
+const PREVIEW_TYPES = /^image\/(png|jpeg|gif|webp)$/;
+const incomingFiles = new Map(); // `${peerId}:${fileId}` -> transfer in progress
+
+function safeMime(mime) {
+  return typeof mime === 'string' && mime.length <= 100 && /^[\w.+-]+\/[\w.+-]+$/.test(mime) ? mime.toLowerCase() : 'application/octet-stream';
+}
+
+function safeFileName(name) {
+  const clean = String(name || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim().slice(0, 120);
+  return clean || 'file';
+}
+
+function addFileEntry(peerId, entry) {
+  const history = chatHistories.get(peerId) || [];
+  history.push(entry);
+  chatHistories.set(peerId, history);
+  if (peerId === openChatPeerId) renderChatMessage(entry);
+  else if (entry.fromId === peerId) setUnread(peerId, (unreadCounts.get(peerId) || 0) + 1);
+  scheduleRenderPeerList(); // most recent conversation moves to the top
+}
+
+function updateFileProgress(peerId, entry) {
+  if (peerId !== openChatPeerId) return;
+  const bar = chatMessagesEl.querySelector(`.chatMsg[data-msg-id="${CSS.escape(entry.id)}"] .fileProgress span`);
+  if (bar) bar.style.width = `${Math.round(entry.file.progress * 100)}%`;
+}
+
+function updateFileEntry(peerId) {
+  if (peerId === openChatPeerId) rerenderThread();
+}
+
+async function sendFiles(peerId, files) {
+  for (const file of files) await sendFile(peerId, file);
+}
+
+async function sendFile(peerId, file) {
+  if (file.size > MAX_FILE_BYTES) { toast(t('toast.fileTooBig', { name: file.name, max: '100 MB' })); return; }
+  const conn = trustedConn(peerId);
+  if (!conn) { toast(t('toast.fileOffline', { name: friendName(peerId) })); return; }
+  if (!peerCaps.get(peerId)?.has('files')) { toast(t('toast.fileUnsupported', { name: friendName(peerId) })); return; }
+  const id = crypto.randomUUID();
+  const mime = safeMime(file.type);
+  const entry = {
+    fromId: peer.id, ts: Date.now(), id,
+    file: { name: safeFileName(file.name), size: file.size, mime, preview: PREVIEW_TYPES.test(mime), url: URL.createObjectURL(file), state: 'sending', progress: 0 },
+  };
+  addFileEntry(peerId, entry);
+  conn.send({ type: 'file-start', id, name: entry.file.name, size: file.size, mime, ts: entry.ts });
+  const count = Math.ceil(file.size / FILE_CHUNK_BYTES);
+  for (let seq = 0; seq < count; seq++) {
+    if (entry.file.cancelled) return;
+    // Don't pile the whole file into memory faster than it can actually go out.
+    while (conn.open && (conn.dataChannel?.bufferedAmount || 0) + (conn.bufferSize || 0) * 16300 > 2 * 1024 * 1024) {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    }
+    if (!conn.open) { entry.file.state = 'failed'; updateFileEntry(peerId); return; }
+    const data = await file.slice(seq * FILE_CHUNK_BYTES, (seq + 1) * FILE_CHUNK_BYTES).arrayBuffer();
+    conn.send({ type: 'file-chunk', id, seq, data });
+    entry.file.progress = (seq + 1) / count;
+    if (seq % 4 === 0) updateFileProgress(peerId, entry);
+  }
+  entry.file.state = 'done';
+  entry.file.progress = 1;
+  updateFileEntry(peerId);
+}
+
+function receiveFilePart(fromId, msg) {
+  if (!isFriend(fromId)) return;
+  const id = wireMessageId(msg.id);
+  if (!id) return;
+  const key = `${fromId}:${id}`;
+  let transfer = incomingFiles.get(key);
+  if (!transfer) {
+    if ([...incomingFiles.keys()].filter((k) => k.startsWith(`${fromId}:`)).length >= 10) return;
+    transfer = { chunks: [], have: 0, received: 0, entry: null, count: null, size: null, timer: null };
+    incomingFiles.set(key, transfer);
+  }
+  // Give up on a transfer that's gone quiet (they closed patycord mid-file, say).
+  clearTimeout(transfer.timer);
+  transfer.timer = setTimeout(() => {
+    incomingFiles.delete(key);
+    if (transfer.entry) { transfer.entry.file.state = 'failed'; updateFileEntry(fromId); }
+  }, 30000);
+
+  if (msg.type === 'file-start') {
+    if (transfer.entry) return;
+    const size = msg.size;
+    if (!Number.isInteger(size) || size < 0 || size > MAX_FILE_BYTES) { clearTimeout(transfer.timer); incomingFiles.delete(key); return; }
+    const mime = safeMime(msg.mime);
+    transfer.size = size;
+    transfer.count = Math.ceil(size / FILE_CHUNK_BYTES);
+    transfer.entry = {
+      fromId, ts: wireTimestamp(msg.ts), id,
+      file: { name: safeFileName(msg.name), size, mime, preview: PREVIEW_TYPES.test(mime), url: null, state: 'receiving', progress: 0 },
+    };
+    addFileEntry(fromId, transfer.entry);
+    announceMessage(fromId, t('chat.sentFile', { name: transfer.entry.file.name }));
+  } else {
+    const { seq, data } = msg;
+    const isBinary = data instanceof ArrayBuffer || ArrayBuffer.isView(data);
+    if (!Number.isInteger(seq) || seq < 0 || seq >= MAX_FILE_BYTES / FILE_CHUNK_BYTES || !isBinary || data.byteLength > FILE_CHUNK_BYTES) return;
+    if (transfer.chunks[seq] || (transfer.count !== null && seq >= transfer.count)) return;
+    transfer.chunks[seq] = data;
+    transfer.have++;
+    transfer.received += data.byteLength;
+  }
+  if (!transfer.entry) return; // chunks that beat the start along — kept until it arrives
+  const { entry } = transfer;
+  if (transfer.have === transfer.count && transfer.received === transfer.size) {
+    clearTimeout(transfer.timer);
+    incomingFiles.delete(key);
+    entry.file.url = URL.createObjectURL(new Blob(transfer.chunks, { type: entry.file.mime }));
+    entry.file.state = 'done';
+    entry.file.progress = 1;
+    updateFileEntry(fromId);
+  } else {
+    entry.file.progress = transfer.size ? transfer.received / transfer.size : 0;
+    if (transfer.have % 4 === 0) updateFileProgress(fromId, entry);
+  }
+}
+
+function openLightbox(src, name) {
+  const overlay = document.createElement('div');
+  overlay.id = 'lightbox';
+  overlay.className = 'modalOverlay';
+  overlay.innerHTML = `
+    <div class="lightboxInner">
+      <img class="lightboxImg" src="${src}" alt="${escapeAttr(name)}">
+      <div class="lightboxBar">
+        <a class="downloadBtn" href="${src}" download="${escapeAttr(name)}"><button>${t('chat.download')}</button></a>
+      </div>
+    </div>`;
+  const close = () => { overlay.remove(); window.removeEventListener('keydown', onKey, true); };
+  const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  overlay.addEventListener('click', (e) => { if (!e.target.closest('.lightboxBar')) close(); });
+  window.addEventListener('keydown', onKey, true);
+  document.body.appendChild(overlay);
+}
+
+// Links in messages open in your browser, never inside patycord.
+function openExternal(url) {
+  if (!/^https?:\/\//i.test(url)) return;
+  if (window.__TAURI__) tauriInvoke('open_url', { url }).catch((err) => log(`couldn't open link: ${err}`));
+  else window.open(url, '_blank', 'noopener');
+}
+
+// --- friend menus and nicknames ----------------------------------------------
+
+function showFriendMenu(e, id) {
+  e.preventDefault();
+  if (!isFriend(id)) return;
+  const inCall = calls.has(id);
+  const online = inCall || presence.get(id);
+  openMenu([
+    { label: t('friends.message'), icon: ICONS.chat, action: () => openChatWith(id) },
+    inCall ? { label: t('sidebar.hangUp'), icon: ICONS.phoneOff, action: () => hangUp(id) }
+      : online ? { label: t('sidebar.call'), icon: ICONS.phone, action: () => connectTo(id) } : null,
+    { separator: true },
+    { label: t('menu.nickname'), icon: ICONS.tag, action: () => editNickname(id) },
+    { label: t('menu.copyId'), icon: ICONS.copy, action: () => { navigator.clipboard.writeText(id); toast(t('toast.idCopied'), 'info'); } },
+    { separator: true },
+    { label: t('menu.removeFriend'), icon: ICONS.userMinus, danger: true, action: () => confirmRemoveFriend(id) },
+  ], e.clientX, e.clientY);
+}
+
+// A nickname is only ever shown to you — friends still see their own name.
+async function editNickname(id) {
+  const friend = loadFriends().find((f) => f.id === id);
+  if (!friend) return;
+  const ownName = remoteNames.get(id) || friend.name || t('unknown');
+  const value = await promptDialog({
+    title: t('menu.nicknameTitle', { name: ownName }), message: t('menu.nicknameDesc'),
+    value: friend.nickname || '', placeholder: ownName, confirmLabel: t('settings.save'),
+  });
+  if (value === null) return;
+  const friends = loadFriends();
+  const target = friends.find((f) => f.id === id);
+  if (!target) return;
+  if (value) target.nickname = value.slice(0, 40);
+  else delete target.nickname;
+  saveFriends(friends);
+  if (openChatPeerId === id) enterDm(id);
+  renderPeerList();
+}
+
+async function confirmRemoveFriend(id) {
+  const ok = await confirmDialog({
+    title: t('menu.removeTitle', { name: friendName(id) }), message: t('menu.removeBody'),
+    confirmLabel: t('menu.remove'), danger: true,
+  });
+  if (ok) removeFriend(id);
 }
 
 // A silent, no-audio connection attempt just to check whether a friend's app is
@@ -1987,6 +2542,7 @@ function probePresence(id) {
       if (pendingMessages.get(id)?.length) ensureDataConnection(id);
     } else {
       setPeerActivity(id, null); // stale activity shouldn't outlive them going offline
+      statusByPeer.delete(id);
       if (presence.get(id) !== false) { presence.set(id, false); scheduleRenderPeerList(); }
       try { probe.close(); } catch {}
     }
@@ -2061,16 +2617,19 @@ function retryFriendRequest(id) {
 // hand (e.g. mid-loop over loadFriends()) — skips redoing the full reload+scan
 // friendName() would otherwise repeat for every single row.
 function nameFor(friend) {
-  return remoteNames.get(friend.id) || friend.name || t('unknown');
+  return friend.nickname || remoteNames.get(friend.id) || friend.name || t('unknown');
 }
 
 function friendName(id) {
-  return remoteNames.get(id) || loadFriends().find((f) => f.id === id)?.name || t('unknown');
+  const friend = loadFriends().find((f) => f.id === id);
+  return friend?.nickname || remoteNames.get(id) || friend?.name || t('unknown');
 }
 
 function renderIncomingCalls() {
-  if (pendingCalls.size > 0) startRinging();
-  else {
+  if (pendingCalls.size > 0) {
+    if (getDnd()) stopRinging(); // still shows, just silently
+    else startRinging();
+  } else {
     stopRinging();
     if (flashingForCall) { // nothing left to answer
       flashingForCall = false;
@@ -2162,7 +2721,7 @@ function ringIncomingCall(call) {
   pendingCalls.set(call.peer, call);
   renderIncomingCalls();
   notifyDesktop(t('notify.incomingCall', { name: friendName(call.peer) }), t('notify.incomingCallBody'));
-  if (appInBackground()) {
+  if (appInBackground() && !getDnd()) {
     flashingForCall = true;
     tauriInvoke('request_attention', { urgent: true }).catch(() => {});
   }
@@ -2198,6 +2757,7 @@ function addScreenTile(peerId, call) {
   tile.className = 'screenTile';
   const video = document.createElement('video');
   applySpeakerTo(video); // the sharer's system audio, if they included it
+  video.muted = deafened;
   video.autoplay = true;
   video.playsInline = true;
   // Not muted — if the sharer included system audio, we want to actually hear it.
@@ -2773,12 +3333,21 @@ function copyMyId(btn, label) {
 copyBtn.addEventListener('click', () => copyMyId(copyBtn, () => t('settings.copy')));
 myIdEl.addEventListener('click', () => copyMyId(copyBtn, () => t('settings.copy')));
 // Like Discord, clicking yourself in the bottom-left corner copies who you are.
+// Like Discord, clicking yourself in the bottom-left corner is where you set
+// your status — and copy who you are.
 userInfoEl.addEventListener('click', () => {
-  if (!peer) return;
-  copyMyId(myTagEl, myTagText);
-  myTagEl.hidden = false;
-  myActivityEl.hidden = true;
-  setTimeout(renderMyActivity, 1200);
+  const rect = userInfoEl.getBoundingClientRect();
+  openMenu([
+    { label: t('status.online'), icon: '<span class="dot online"></span>', checked: !getDnd(), action: () => setDnd(false) },
+    { label: t('status.dnd'), desc: t('status.dndDesc'), icon: '<span class="dot dnd"></span>', checked: getDnd(), action: () => setDnd(true) },
+    { separator: true },
+    peer && { label: t('menu.copyMyId'), icon: ICONS.copy, action: () => {
+      copyMyId(myTagEl, myTagText);
+      myTagEl.hidden = false;
+      myActivityEl.hidden = true;
+      setTimeout(renderMyActivity, 1200);
+    } },
+  ], rect.left, rect.top - 6, { above: true });
 });
 
 settingsBtn.addEventListener('click', () => {
@@ -2894,6 +3463,7 @@ function applyLanguage() {
   }
   renderMuteButtons();
   renderShareButtons();
+  renderMyStatus();
   if (currentView === 'dm') enterDm(openChatPeerId);
   else if (currentView === 'call') showCallChat();
   friendsEmptyKind = null; // force renderFriendsEmpty (via renderPeerList below) to rebuild in the new language
@@ -2907,18 +3477,74 @@ function applyLanguage() {
 chatSendBtn.addEventListener('click', sendChatMessage);
 chatInputEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') sendChatMessage();
+  // Up in an empty box edits your last message, like Discord.
+  if (e.key === 'ArrowUp' && !chatInputEl.value && currentView === 'dm') {
+    const mine = (chatHistories.get(openChatPeerId) || []).filter((m) => m.fromId === peer?.id && m.id && !m.file);
+    if (mine.length) { e.preventDefault(); startEditing(mine[mine.length - 1].id); }
+  }
+});
+chatInputEl.addEventListener('input', sendTyping);
+chatInputEl.addEventListener('paste', (e) => {
+  const files = [...(e.clipboardData?.files || [])];
+  if (!files.length || currentView !== 'dm') return;
+  e.preventDefault();
+  sendFiles(openChatPeerId, files);
+});
+attachBtn.addEventListener('click', () => fileInputEl.click());
+fileInputEl.addEventListener('change', () => {
+  if (currentView === 'dm') sendFiles(openChatPeerId, [...fileInputEl.files]);
+  fileInputEl.value = '';
+});
+chatMessagesEl.addEventListener('click', (e) => {
+  const link = e.target.closest('.msgLink');
+  if (link) { e.preventDefault(); openExternal(link.href); return; }
+  const image = e.target.closest('.msgImage');
+  if (image) { openLightbox(image.src, image.alt); return; }
+  const msgEl = e.target.closest('.chatMsg');
+  const msgId = msgEl?.dataset.msgId;
+  if (!msgId) return;
+  if (e.target.closest('.editMsgBtn')) startEditing(msgId);
+  else if (e.target.closest('.deleteMsgBtn')) requestDeleteMessage(msgId, e.shiftKey);
+});
+
+// Dropping a file onto a DM sends it. Anywhere else, a drop must not make the
+// window navigate to the file instead.
+let dragDepth = 0;
+const draggingFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', (e) => e.preventDefault());
+chatPaneEl.addEventListener('dragenter', (e) => {
+  if (!draggingFiles(e) || currentView !== 'dm') return;
+  dragDepth++;
+  document.getElementById('dropText').textContent = t('chat.dropHere', { name: friendName(openChatPeerId) });
+  dropOverlayEl.hidden = false;
+});
+chatPaneEl.addEventListener('dragleave', () => {
+  if (dragDepth && --dragDepth === 0) dropOverlayEl.hidden = true;
+});
+chatPaneEl.addEventListener('drop', (e) => {
+  dragDepth = 0;
+  dropOverlayEl.hidden = true;
+  if (currentView === 'dm' && e.dataTransfer?.files.length) sendFiles(openChatPeerId, [...e.dataTransfer.files]);
 });
 
 // The call view and the sidebar's bottom corner each have their own mute,
 // share-screen and leave buttons — both sets do the same thing.
 for (const btn of [muteBtn, panelMuteBtn]) {
   btn.addEventListener('click', () => {
-    muted = !muted;
+    // Unmuting while deafened undeafens too, like Discord.
+    if (deafened) { deafened = false; muted = false; applyDeafen(); }
+    else muted = !muted;
     applyTransmitState(); // startMic applies it too, if the mic isn't open yet
     renderMuteButtons();
     playMuteSound(muted);
     renderCallPanel(); // our own tile shows the muted badge
+    sendVoiceState();
   });
+}
+
+for (const btn of [deafenBtn, panelDeafenBtn]) {
+  btn.addEventListener('click', () => setDeafened(!deafened));
 }
 
 for (const btn of [leaveCallBtn, panelLeaveBtn]) {
@@ -2983,6 +3609,10 @@ voiceStatusIconEl.innerHTML = ICONS.signal;
 dmCallBtn.innerHTML = ICONS.phone;
 callChatToggleBtn.innerHTML = ICONS.chat;
 chatSendBtn.innerHTML = ICONS.send;
+attachBtn.innerHTML = ICONS.plusCircle;
+document.getElementById('dropIcon').innerHTML = ICONS.upload;
+chatHeaderNameEl.addEventListener('contextmenu', (e) => { if (openChatPeerId) showFriendMenu(e, openChatPeerId); });
+renderMyStatus();
 
 // --- release notes popup ------------------------------------------------
 // Shared by the "update available" banner and the post-update "what's new"

@@ -16,6 +16,7 @@
     "allow-set-tray-labels",
     "allow-notify",
     "allow-request-attention",
+    "allow-open-url",
     "autostart:allow-enable",
     "autostart:allow-disable",
     "autostart:allow-is-enabled"

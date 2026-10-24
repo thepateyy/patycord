@@ -569,6 +569,21 @@ fn request_attention(app: tauri::AppHandle, urgent: bool) {
     let _ = window.request_user_attention(Some(tauri::UserAttentionType::Critical));
 }
 
+// Opens a link from a chat message in the default browser. Only http(s), and
+// the URL reaches explorer.exe as a plain argument — never through a shell —
+// so nothing in it can be run as a command.
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    let lower = url.to_ascii_lowercase();
+    let is_web = lower.starts_with("https://") || lower.starts_with("http://");
+    if !is_web || url.len() > 2048 || url.chars().any(|c| c.is_control() || c == '"' || c.is_whitespace()) {
+        return Err("not a web link".into());
+    }
+    #[cfg(target_os = "windows")]
+    std::process::Command::new("explorer.exe").arg(&url).spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -589,7 +604,8 @@ pub fn run() {
             set_close_to_tray,
             set_tray_labels,
             notify,
-            request_attention
+            request_attention,
+            open_url
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
