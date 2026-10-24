@@ -12,7 +12,6 @@ const settingsNameInput = document.getElementById('settingsNameInput');
 const settingsSaveNameBtn = document.getElementById('settingsSaveNameBtn');
 const noiseSuppressionToggle = document.getElementById('noiseSuppressionToggle');
 const shareActivityToggle = document.getElementById('shareActivityToggle');
-const friendsOnlyCallsToggle = document.getElementById('friendsOnlyCallsToggle');
 const micSelectEl = document.getElementById('micSelect');
 const micMeterFillEl = document.getElementById('micMeterFill');
 const speakerSelectEl = document.getElementById('speakerSelect');
@@ -1919,27 +1918,21 @@ function renderIncomingCalls() {
 }
 
 // --- who's allowed to ring us -----------------------------------------
-// Anyone who has our ID can place a call to it. With "Only friends can call me"
-// on (the default), calls from anyone who isn't an accepted friend are declined
-// without ringing — with one exception: someone joining a call we're already
-// in, through a friend of theirs who's in it with us. Joining works by the
-// newcomer calling everyone already in the call directly (see 'roster'), and
-// they needn't be friends with all of them; the member they joined through
-// vouches for them with a 'peer-joined' message to the rest of us.
+// Anyone who has our ID can place a call to it, but only accepted friends ring;
+// everyone else is declined without ringing — with one exception: someone
+// joining a call we're already in, through a friend of theirs who's in it with
+// us. Joining works by the newcomer calling everyone already in the call
+// directly (see 'roster'), and they needn't be friends with all of them; the
+// member they joined through vouches for them with a 'peer-joined' message to
+// the rest of us.
 
-function getFriendsOnlyCalls() {
-  return localStorage.getItem('patycord.friendsOnlyCalls') !== 'off'; // on by default
-}
-
-function setFriendsOnlyCalls(enabled) {
-  localStorage.setItem('patycord.friendsOnlyCalls', enabled ? 'on' : 'off');
-}
+localStorage.removeItem('patycord.friendsOnlyCalls'); // left over from when this could be switched off
 
 const introducedPeers = new Map(); // peerId -> when a call member said they're joining
 const INTRODUCTION_TTL_MS = 60000;
 
 function mayRing(id) {
-  if (!getFriendsOnlyCalls() || acceptedFriends().some((f) => f.id === id)) return true;
+  if (acceptedFriends().some((f) => f.id === id)) return true;
   const introducedAt = introducedPeers.get(id);
   return calls.size > 0 && !!introducedAt && Date.now() - introducedAt < INTRODUCTION_TTL_MS;
 }
@@ -2597,7 +2590,6 @@ settingsBtn.addEventListener('click', () => {
   // The registry entry is the source of truth — it can also be removed from Task Manager's Startup tab.
   tauriInvoke('plugin:autostart|is_enabled').then((on) => { startWithWindowsToggle.checked = !!on; }).catch(() => {});
   shareActivityToggle.checked = getShareActivityEnabled();
-  friendsOnlyCallsToggle.checked = getFriendsOnlyCalls();
   settingsModal.hidden = false;
   showSettingsPane('account');
   appVersionEl.textContent = '';
@@ -2642,9 +2634,6 @@ noiseSuppressionToggle.addEventListener('change', () => {
 });
 shareActivityToggle.addEventListener('change', () => {
   setShareActivityEnabled(shareActivityToggle.checked);
-});
-friendsOnlyCallsToggle.addEventListener('change', () => {
-  setFriendsOnlyCalls(friendsOnlyCallsToggle.checked);
 });
 notificationsToggle.addEventListener('change', () => {
   localStorage.setItem('patycord.notifications', notificationsToggle.checked ? 'on' : 'off');

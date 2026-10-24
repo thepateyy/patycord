@@ -172,7 +172,7 @@ test('a message to an offline friend is delivered once they come back', async ({
   expect(copies).toBe(1);
 });
 
-test('with "only friends can call me" on, a stranger\'s call never rings', async ({ browser }) => {
+test('a call from someone who isn\'t a friend never rings', async ({ browser }) => {
   const alice = await openApp(browser, 'Alice');
 
   // A bare PeerJS client that isn't anyone's friend, dialing Alice's ID directly.
