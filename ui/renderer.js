@@ -1,4 +1,5 @@
 import { t, getLanguage, setLanguage, applyStaticTranslations, LANGUAGES } from './i18n.js';
+import { enhanceSelect } from './select.js';
 
 const myIdEl = document.getElementById('myId');
 const myNameEl = document.getElementById('myName');
@@ -1095,6 +1096,8 @@ function toggleScreenSharePopover(anchorEl) {
   const startBtn = screenSharePopoverEl.querySelector('.screenSharePopoverStart');
   resSelect.value = getScreenShareResolution();
   fpsSelect.value = getScreenShareFps();
+  enhanceSelect(resSelect);
+  enhanceSelect(fpsSelect);
 
   resSelect.addEventListener('change', () => setScreenShareResolution(resSelect.value));
   fpsSelect.addEventListener('change', () => setScreenShareFps(fpsSelect.value));
@@ -2451,6 +2454,7 @@ function closeSettings() {
   stopMicMeter();
 }
 
+for (const select of [micSelectEl, speakerSelectEl, languageSelectEl]) enhanceSelect(select);
 micSelectEl.addEventListener('change', () => setMicDevice(micSelectEl.value));
 speakerSelectEl.addEventListener('change', () => setSpeakerDevice(speakerSelectEl.value));
 speakerTestBtn.addEventListener('click', playRing);
