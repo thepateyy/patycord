@@ -166,6 +166,7 @@ const translations = {
     'toast.storeSaveFailed': "Couldn't save your data to disk — friends and messages from this session may not be kept.",
     'toast.newMessage': 'New message from {name}',
     'toast.newCallMessage': 'New call chat message from {name}',
+    'toast.identityFailed': "Couldn't verify that this is really {name} — someone else may be using their ID, so patycord didn't connect you.",
 
     'log.disconnected': 'disconnected from {id}',
     'log.joining': '{name} is joining the call',
@@ -180,6 +181,8 @@ const translations = {
     'log.peerError': 'peer error: {error}',
     'log.friendRequestSent': 'friend request sent to {name}',
     'log.updateCheckFailed': 'update check failed: {error}',
+    'log.identityFailed': 'identity check failed for {tag} ({reason})',
+    'log.legacyPeer': "{name} is on an older patycord without identity keys — let through unverified",
 
     'myId.micNeeded': 'mic access needed',
     'screen.label': "{name}'s screen",
@@ -347,6 +350,7 @@ const translations = {
     'toast.storeSaveFailed': 'Nem sikerült a lemezre menteni az adataidat — a munkamenet barátai és üzenetei elveszhetnek.',
     'toast.newMessage': 'Új üzenet tőle: {name}',
     'toast.newCallMessage': 'Új üzenet a hívás csevegésben tőle: {name}',
+    'toast.identityFailed': 'Nem sikerült ellenőrizni, hogy tényleg {name} az — lehet, hogy valaki más használja az azonosítóját, ezért a patycord nem kapcsolt össze vele.',
 
     'log.disconnected': 'megszakadt a kapcsolat vele: {id}',
     'log.joining': '{name} csatlakozik a híváshoz',
@@ -361,6 +365,8 @@ const translations = {
     'log.peerError': 'kapcsolati hiba: {error}',
     'log.friendRequestSent': 'barátkérés elküldve neki: {name}',
     'log.updateCheckFailed': 'a frissítés keresése sikertelen: {error}',
+    'log.identityFailed': 'sikertelen személyazonosság-ellenőrzés: {tag} ({reason})',
+    'log.legacyPeer': '{name} régebbi, személyazonossági kulcs nélküli patycordot használ — ellenőrzés nélkül engedve',
 
     'myId.micNeeded': 'mikrofon-hozzáférés szükséges',
     'screen.label': '{name} képernyője',

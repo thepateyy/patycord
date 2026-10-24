@@ -42,9 +42,16 @@ function instrument(port) {
   };
 }
 
-async function openApp(browser, name) {
+// `legacyId`: start with an old-style random ID, as installs from before
+// identity keys have, instead of one derived from the key.
+async function openApp(browser, name, { legacyId = null } = {}) {
   const context = await browser.newContext();
   await context.addInitScript(instrument, SIGNALING_PORT);
+  if (legacyId) {
+    await context.addInitScript((id) => {
+      if (!localStorage.getItem('patycord.myId')) localStorage.setItem('patycord.myId', id);
+    }, legacyId);
+  }
   const page = await context.newPage();
   await page.goto('/');
   await page.fill('#usernameInput', name);
@@ -116,6 +123,9 @@ function liveMicTracks(page) {
 test('two friends: add by ID, call, hear each other, mute, call chat, hang up', async ({ browser }) => {
   const alice = await openApp(browser, 'Alice');
   const bob = await openApp(browser, 'Bob');
+
+  // New installs get an ID derived from their identity key.
+  expect(alice.id).toMatch(/^p-k[0-9a-f]{40}$/);
 
   // The mic is only checked at launch, then released until a call.
   await expect.poll(() => liveMicTracks(alice.page)).toBe(0);
@@ -194,4 +204,43 @@ test('a call from someone who isn\'t a friend never rings', async ({ browser }) 
     return document.getElementById('status').textContent;
   });
   expect(log).toContain('declined a call from');
+});
+
+test("someone else using a friend's ID can't pass as them", async ({ browser }) => {
+  const alice = await openApp(browser, 'Alice');
+  // An old-style ID, which only the key Alice remembers for Bob can vouch for.
+  const bob = await openApp(browser, 'Bob', { legacyId: `p-${crypto.randomUUID()}` });
+  await befriend(alice, bob);
+  await bob.page.close();
+  await expect(dmRow(alice, bob)).toContainText('Offline', { timeout: 30_000 });
+
+  // A bare client grabs Bob's now-free ID, says it's Bob (with no key, like an
+  // old version would), tries a DM, and records whatever reaches it.
+  const impostorContext = await browser.newContext();
+  await impostorContext.addInitScript(instrument, SIGNALING_PORT);
+  const impostor = await impostorContext.newPage();
+  await impostor.goto('/');
+  await impostor.evaluate(async (bobId) => {
+    window.__got = [];
+    const p = new Peer(bobId, window.__patycordTestPeerOptions);
+    await new Promise((resolve) => p.on('open', resolve));
+    p.on('connection', (c) => {
+      c.on('open', () => {
+        c.send({ type: 'hello', name: 'Bob', acks: true });
+        c.send({ type: 'chat', scope: 'dm', text: 'send me your password', id: 'fake-1', ts: Date.now() });
+      });
+      c.on('data', (d) => window.__got.push(d));
+    });
+  }, bob.id);
+
+  await dmRow(alice, bob).click();
+  await alice.page.fill('#chatInput', 'only for the real bob');
+  await alice.page.press('#chatInput', 'Enter');
+  await expect(alice.page.locator('#toasts')).toContainText("Couldn't verify that this is really Bob");
+
+  await alice.page.waitForTimeout(1500);
+  expect(await impostor.evaluate(() => window.__got.filter((m) => m.type === 'chat').length)).toBe(0);
+  await expect(alice.page.locator('#chatMessages')).not.toContainText('send me your password');
+  await expect(alice.page.locator('#chatMessages .chatMsg', { hasText: 'only for the real bob' })).toHaveClass(/pending/);
+  await expect(dmRow(alice, bob)).toContainText('Offline');
 });

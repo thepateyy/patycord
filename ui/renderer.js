@@ -1,5 +1,6 @@
 import { t, getLanguage, setLanguage, applyStaticTranslations, LANGUAGES } from './i18n.js';
 import { enhanceSelect } from './select.js';
+import { loadIdentity, idForKey, isKeyDerivedId, newNonce, signChallenge, verifyChallenge } from './identity.js';
 
 const myIdEl = document.getElementById('myId');
 const myNameEl = document.getElementById('myName');
@@ -210,7 +211,7 @@ const ICONS = {
 // (or another process reading it directly) can't be decrypted without also being
 // that user. Cosmetic prefs (language, noise suppression, screen-share quality,
 // ...) aren't worth the complexity and stay in plain localStorage.
-const SECURE_STORE_KEYS = ['myId', 'myUsername', 'friends', 'chatHistories', 'pendingMessages', 'unreadCounts'];
+const SECURE_STORE_KEYS = ['myId', 'myUsername', 'identityKey', 'friends', 'chatHistories', 'pendingMessages', 'unreadCounts'];
 const secureStore = {}; // populated by initSecureStore() before anything else runs
 let secureStoreReadOnly = false; // set when the store exists but couldn't be decrypted — see initSecureStore
 
@@ -314,12 +315,29 @@ function saveSecureStore() {
 
 // --- persistent identity & friends list -------------------------------
 
+// initIdentity() sets this up at startup, derived from the identity key; a
+// random one is only the fallback if the key couldn't be made.
 function getMyPersistentId() {
   if (!secureStore.myId) {
     secureStore.myId = 'p-' + crypto.randomUUID();
     saveSecureStore();
   }
   return secureStore.myId;
+}
+
+let myIdentity = null; // { privateKey, publicKey } — see identity.js and "identity verification" below
+
+async function initIdentity() {
+  try {
+    myIdentity = await loadIdentity(secureStore.identityKey);
+    if (myIdentity.stored) secureStore.identityKey = myIdentity.stored;
+    // New installs get an ID their key vouches for. Existing ones keep theirs —
+    // every friend has it saved.
+    if (!secureStore.myId) secureStore.myId = await idForKey(myIdentity.publicKey);
+    if (myIdentity.stored) saveSecureStore();
+  } catch (err) {
+    log(`identity key unavailable: ${err.message || err}`);
+  }
 }
 
 function getShareActivityEnabled() {
@@ -529,7 +547,8 @@ function pendingOutgoingFriends() {
 // in the sidebar's separate Pending list, not the real Friends list. Calling this
 // again with 'accepted' on an existing pending entry promotes it once the other
 // side accepts.
-function addFriend(id, status = 'accepted') {
+// `key`: their identity key, if a connection from them has already proven it.
+function addFriend(id, status = 'accepted', key = null) {
   const friends = loadFriends();
   const existing = friends.find((f) => f.id === id);
   if (existing) {
@@ -541,7 +560,7 @@ function addFriend(id, status = 'accepted') {
     }
     return;
   }
-  friends.push({ id, name: remoteNames.get(id) || null, status });
+  friends.push({ id, name: remoteNames.get(id) || null, status, ...(key && { key }) });
   saveFriends(friends);
   renderPeerList();
   if (status === 'accepted') probePresence(id);
@@ -588,8 +607,10 @@ function setPeerActivity(id, activity) {
 // to — friends we're mid-call or mid-chat with get it instantly; everyone else picks
 // it up on their next presence probe (see probePresence).
 function broadcastActivity() {
-  for (const conn of dataConnections.values()) {
-    if (conn.open) conn.send({ type: 'activity', activity: outgoingActivity() });
+  for (const [id, conn] of dataConnections) {
+    if (conn.open && isTrusted(conn) && acceptedFriends().some((f) => f.id === id)) {
+      conn.send({ type: 'activity', activity: outgoingActivity() });
+    }
   }
 }
 
@@ -976,7 +997,8 @@ function pendingRowEl(id, name, incoming) {
   li.querySelector('.acceptBtn').addEventListener('click', () => {
     pendingFriendRequests.delete(id);
     learnName(id, rawName);
-    addFriend(id);
+    const conn = dataConnections.get(id);
+    addFriend(id, 'accepted', conn?.auth === 'verified' ? conn.theirKey : null);
     dataConnections.get(id)?.send({ type: 'friend-accept' });
     toast(t('toast.addedFriend', { name: rawName || t('them') }), 'info');
     renderPeerList();
@@ -1382,12 +1404,8 @@ function removeDataConnection(id, conn) {
 function ensureDataConnection(id) {
   if (dataConnections.has(id)) return dataConnections.get(id);
   const conn = peer.connect(id);
-  conn.on('open', () => {
-    conn.send({ type: 'hello', name: getMyUsername(), activity: outgoingActivity(), acks: true });
-    // Queued DMs go out on *their* hello (see handleDataMessage), once we know
-    // whether they confirm delivery.
-  });
-  conn.on('data', (msg) => handleDataMessage(id, msg));
+  wireIdentityCheck(conn, id); // queued DMs go out once it passes — see settleIdentity
+  conn.on('open', () => conn.send(myHello(conn)));
   conn.on('error', () => {}); // connectivity errors surface via the call itself
   conn.on('close', () => removeDataConnection(id, conn));
   dataConnections.set(id, conn);
@@ -1441,7 +1459,8 @@ function connectTo(id) {
 // gets a `hello` — so e.g. an incoming call shows a readable name instead of a raw
 // ID — but never the roster or activity: peer IDs are unguessable, but there's no
 // reason to hand a stranger who's in a call with us, or let them make us auto-dial
-// whatever list of IDs they feel like sending.
+// whatever list of IDs they feel like sending. And a friend gets them only once
+// they've proven they really are that friend (see settleIdentity).
 //
 // A presence probe (see probePresence) only gets the `hello`: it's torn down again
 // within a second, so it mustn't displace a real connection in dataConnections,
@@ -1449,43 +1468,216 @@ function connectTo(id) {
 // reads the hello off it, so anything else sent there would just be lost.
 function handleIncomingDataConnection(conn) {
   const isProbe = conn.metadata?.probe === true;
-  conn.on('open', () => {
-    const isFriend = acceptedFriends().some((f) => f.id === conn.peer);
-    conn.send({ type: 'hello', name: getMyUsername(), activity: isFriend ? outgoingActivity() : null, acks: true });
-    if (isFriend) {
-      // They just reached out, so they're online — no need to wait for our own
-      // (deliberately infrequent, for offline friends) sweep to notice.
-      markOnline(conn.peer);
-    }
-    if (isProbe) {
-      // Can't hand queued DMs over the probe itself — open a real connection for them instead.
-      if (isFriend && pendingMessages.get(conn.peer)?.length) ensureDataConnection(conn.peer);
-      return;
-    }
-    if (isFriend) {
+  wireIdentityCheck(conn, conn.peer, {
+    probe: isProbe,
+    onTrusted: () => {
+      if (!acceptedFriends().some((f) => f.id === conn.peer)) return;
+      if (isProbe) {
+        // Can't hand queued DMs over the probe itself — open a real connection for them instead.
+        if (pendingMessages.get(conn.peer)?.length) ensureDataConnection(conn.peer);
+        return;
+      }
       const roster = [...calls.keys()].filter((id) => id !== conn.peer);
       conn.send({ type: 'roster', peers: roster });
       for (const [otherId, otherConn] of dataConnections) {
         if (otherId !== conn.peer) otherConn.send({ type: 'peer-joined', id: conn.peer });
       }
-    }
-    dataConnections.set(conn.peer, conn); // queued DMs follow on their hello
+    },
   });
-  conn.on('data', (msg) => handleDataMessage(conn.peer, msg));
+  conn.on('open', () => {
+    conn.send(myHello(conn));
+    if (!isProbe) dataConnections.set(conn.peer, conn);
+  });
   conn.on('close', () => removeDataConnection(conn.peer, conn));
 }
 
+// --- identity verification -----------------------------------------------
+// Peer IDs are shared openly (that's how you add a friend), and the signaling
+// broker lets whoever's online claim any free ID — so the ID a connection comes
+// from proves nothing on its own. Every data connection therefore starts with
+// both sides putting their public key and a fresh random challenge in their
+// hello, and signing the other side's challenge (see identity.js). Nothing else
+// on the connection is acted on until that settles:
+//  - 'verified': they hold the key for that ID. A friend's key is remembered the
+//    first time we see it — when the friendship starts, or for friends from
+//    before keys existed, their first connection since — and from then on only
+//    that key will do. IDs minted since keys exist are derived from the key, so
+//    even a first contact is checked against the ID itself.
+//  - 'legacy': their version predates keys (no key in their hello) — let
+//    through as before, so friends who haven't updated yet still work. Never
+//    for an ID whose key we already know, or a key-derived ID.
+//  - 'failed': anything else. The connection is dropped, and if it claimed to
+//    be a friend we're calling, so is the call.
+
+const IDENTITY_TIMEOUT_MS = 10000;
+
+function myHello(conn) {
+  return { type: 'hello', name: getMyUsername(), acks: true, key: myIdentity?.publicKey, nonce: conn.myNonce };
+}
+
+function isTrusted(conn) {
+  return conn.auth === 'verified' || conn.auth === 'legacy';
+}
+
+// The live connection to `id` whose identity check passed, if there is one.
+function trustedConn(id) {
+  const conn = dataConnections.get(id);
+  return conn?.open && isTrusted(conn) ? conn : null;
+}
+
+// `onTrusted` runs once the check passes, for what only that kind of
+// connection does (an incoming one sends its roster, a probe ends the probe);
+// `onFailed` once it doesn't.
+function wireIdentityCheck(conn, id, { probe = false, onTrusted = null, onFailed = null } = {}) {
+  conn.auth = 'pending';
+  conn.backlog = []; // messages that arrive before the check settles, replayed after
+  conn.myNonce = newNonce();
+  conn.isProbe = probe;
+  conn.onTrusted = onTrusted;
+  conn.onFailed = onFailed;
+  conn.on('open', () => {
+    conn.identityTimer = setTimeout(() => settleIdentity(conn, id, 'failed', 'timeout'), IDENTITY_TIMEOUT_MS);
+  });
+  conn.on('data', (msg) => {
+    // Everything here comes straight off the wire from another peer, and PeerJS
+    // will happily decode and deliver a bare null or string.
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type === 'hello') { receiveHello(conn, id, msg); return; }
+    if (msg.type === 'auth') { receiveAuth(conn, id, msg); return; }
+    if (conn.auth === 'pending') { if (conn.backlog.length < 100) conn.backlog.push(msg); return; }
+    if (isTrusted(conn)) handleDataMessage(id, msg);
+  });
+}
+
+async function receiveHello(conn, id, msg) {
+  if (conn.helloMsg) return; // only the first one counts
+  conn.helloMsg = msg;
+  try {
+    // Answer their challenge whatever we make of them: the signature is bound to
+    // their ID and ours, so it's no use to anyone but them.
+    if (myIdentity && typeof msg.nonce === 'string' && msg.nonce.length <= 64) {
+      const sig = await signChallenge(myIdentity.privateKey, msg.nonce, getMyPersistentId(), id);
+      if (conn.open) conn.send({ type: 'auth', sig });
+    }
+    const friend = loadFriends().find((f) => f.id === id);
+    const key = typeof msg.key === 'string' && msg.key.length <= 400 ? msg.key : null;
+    if (!key) {
+      if (friend?.key || isKeyDerivedId(id)) settleIdentity(conn, id, 'failed', 'no key');
+      else settleIdentity(conn, id, 'legacy');
+      return;
+    }
+    if (isKeyDerivedId(id) && (await idForKey(key)) !== id) { settleIdentity(conn, id, 'failed', "key doesn't match ID"); return; }
+    if (friend?.key && friend.key !== key) { settleIdentity(conn, id, 'failed', 'different key'); return; }
+    conn.theirKey = key;
+    if (conn.pendingSig) {
+      const sig = conn.pendingSig;
+      conn.pendingSig = null;
+      receiveAuth(conn, id, { sig });
+    }
+  } catch (err) {
+    settleIdentity(conn, id, 'failed', err.message || String(err));
+  }
+}
+
+async function receiveAuth(conn, id, msg) {
+  if (conn.auth !== 'pending' || typeof msg.sig !== 'string' || msg.sig.length > 200) return;
+  if (!conn.theirKey) { conn.pendingSig = msg.sig; return; } // their hello is still being checked
+  try {
+    const ok = await verifyChallenge(conn.theirKey, conn.myNonce, id, getMyPersistentId(), msg.sig);
+    settleIdentity(conn, id, ok ? 'verified' : 'failed', ok ? '' : 'bad signature');
+  } catch (err) {
+    settleIdentity(conn, id, 'failed', err.message || String(err));
+  }
+}
+
+const legacyLogged = new Set();
+const identityWarned = new Set();
+
+function settleIdentity(conn, id, result, reason = '') {
+  if (conn.auth !== 'pending') return;
+  conn.auth = result;
+  clearTimeout(conn.identityTimer);
+  const backlog = conn.backlog;
+  conn.backlog = [];
+  if (result === 'failed') {
+    identityCheckFailed(conn, id, reason);
+    conn.onFailed?.();
+    return;
+  }
+  const hello = conn.helloMsg;
+  learnName(id, typeof hello.name === 'string' ? hello.name.slice(0, 40) : '');
+  ackSupport.set(id, hello.acks === true);
+  if (result === 'verified') {
+    pinKey(id, conn.theirKey);
+  } else if (!legacyLogged.has(id)) {
+    legacyLogged.add(id);
+    log(t('log.legacyPeer', { name: friendName(id) }));
+  }
+  if (acceptedFriends().some((f) => f.id === id)) {
+    // They just reached out (or answered), so they're online — no need to wait
+    // for our own (deliberately infrequent, for offline friends) sweep to notice.
+    markOnline(id);
+    if ('activity' in hello) setPeerActivity(id, hello.activity); // older versions send it in their hello
+    if (conn.open) conn.send({ type: 'activity', activity: outgoingActivity() });
+  }
+  conn.onTrusted?.();
+  for (const msg of backlog) handleDataMessage(id, msg);
+  flushPendingMessages(id);
+  resolveTrustWaiters(id);
+}
+
+function identityCheckFailed(conn, id, reason) {
+  log(t('log.identityFailed', { tag: tagFor(id, remoteNames.get(id)), reason }));
+  try { conn.close(); } catch {}
+  removeDataConnection(id, conn);
+  if (!loadFriends().some((f) => f.id === id) || reason === 'timeout') return; // a slow network isn't an impostor
+  // Whoever answered as them couldn't prove it — don't stay in a call with them either.
+  if (calls.has(id)) hangUp(id);
+  if (!identityWarned.has(id)) {
+    identityWarned.add(id);
+    toast(t('toast.identityFailed', { name: friendName(id) }));
+  }
+}
+
+// Remembers a friend's key the first time they prove they hold one.
+function pinKey(id, key) {
+  const friends = loadFriends();
+  const friend = friends.find((f) => f.id === id);
+  if (!friend || friend.key || !key) return;
+  friend.key = key;
+  saveFriends(friends);
+}
+
+// For an incoming call: the caller opens a data connection just before dialing,
+// so its identity check is usually still in flight when the call lands.
+const trustWaiters = new Map(); // peerId -> [resolve]
+
+function waitForTrust(id, ms) {
+  if (trustedConn(id)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const list = trustWaiters.get(id) || [];
+    const done = () => { clearTimeout(timer); resolve(true); };
+    const timer = setTimeout(() => {
+      const remaining = (trustWaiters.get(id) || []).filter((d) => d !== done);
+      if (remaining.length) trustWaiters.set(id, remaining);
+      else trustWaiters.delete(id);
+      resolve(false);
+    }, ms);
+    list.push(done);
+    trustWaiters.set(id, list);
+  });
+}
+
+function resolveTrustWaiters(id) {
+  if (!trustedConn(id)) return; // e.g. a probe passing — the call needs the real connection
+  const list = trustWaiters.get(id);
+  trustWaiters.delete(id);
+  for (const done of list || []) done();
+}
+
+// Only called with messages from a connection whose identity check passed.
 function handleDataMessage(fromId, msg) {
-  // Everything below comes straight off the wire from another peer, and PeerJS
-  // will happily decode and deliver a bare null or string — reading .type off
-  // that throws right here, inside a data handler nothing above us catches.
-  if (!msg || typeof msg !== 'object') return;
-  if (msg.type === 'hello') {
-    learnName(fromId, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
-    setPeerActivity(fromId, msg.activity);
-    ackSupport.set(fromId, msg.acks === true);
-    flushPendingMessages(fromId);
-  } else if (msg.type === 'activity') {
+  if (msg.type === 'activity') {
     setPeerActivity(fromId, msg.activity);
   } else if (msg.type === 'roster') {
     // Only ever act on a roster from an accepted friend — our own send-side already
@@ -1652,9 +1844,9 @@ const ackSupport = new Map();
 // i.e. every time a connection to them opens — so anything an earlier connection
 // swallowed without a confirmation simply goes out again.
 function flushPendingMessages(peerId) {
-  const conn = dataConnections.get(peerId);
+  const conn = trustedConn(peerId);
   const queue = pendingMessages.get(peerId);
-  if (!conn?.open || !queue?.length || !ackSupport.has(peerId)) return;
+  if (!conn || !queue?.length || !ackSupport.has(peerId)) return;
   for (const message of queue) conn.send(message);
   if (!ackSupport.get(peerId)) {
     markDelivered(peerId, queue.map((m) => m.id));
@@ -1772,6 +1964,17 @@ function probePresence(id) {
   // Tagged so the other end knows it's only a presence check (see
   // handleIncomingDataConnection) — older clients just ignore the metadata.
   const probe = peer.connect(id, { reliable: false, metadata: { probe: true } });
+  // Online only once they've proven who they are — anyone could answer to their ID.
+  wireIdentityCheck(probe, id, {
+    probe: true,
+    onTrusted: () => {
+      finish(true);
+      // Give our activity (sent once the check passes) a moment to arrive before
+      // tearing the probe connection back down.
+      setTimeout(() => { try { probe.close(); } catch {} }, 800);
+    },
+    onFailed: () => finish(false),
+  });
   const finish = (online) => {
     if (settled) return;
     settled = true;
@@ -1790,24 +1993,9 @@ function probePresence(id) {
   };
   const timer = setTimeout(() => finish(false), 4000);
   activeProbes.set(id, () => finish(false)); // so a peer-unavailable error that beats the timeout can end it early
-  probe.on('open', () => {
-    finish(true);
-    probe.send({ type: 'hello', name: getMyUsername(), activity: outgoingActivity(), acks: true });
-    // Give their reply (sent back from handleIncomingDataConnection on their end) a
-    // moment to arrive before tearing the probe connection back down.
-    setTimeout(() => { try { probe.close(); } catch {} }, 800);
-  });
-  probe.on('data', (msg) => {
-    if (!msg || typeof msg !== 'object') return; // same as handleDataMessage — this is untrusted wire data too
-    if (msg.type === 'hello') {
-      learnName(id, typeof msg.name === 'string' ? msg.name.slice(0, 40) : '');
-      setPeerActivity(id, msg.activity);
-    } else if (msg.type === 'chat') {
-      // Older clients flush queued DMs over whatever connection opens first,
-      // probes included — take them rather than silently dropping them.
-      handleDataMessage(id, msg);
-    }
-  });
+  // Older clients flush queued DMs over whatever connection opens first, probes
+  // included — wireIdentityCheck hands those to handleDataMessage like any other.
+  probe.on('open', () => probe.send(myHello(probe)));
   probe.on('error', () => finish(false));
 }
 
@@ -1931,20 +2119,33 @@ localStorage.removeItem('patycord.friendsOnlyCalls'); // left over from when thi
 const introducedPeers = new Map(); // peerId -> when a call member said they're joining
 const INTRODUCTION_TTL_MS = 60000;
 
+function isFriend(id) {
+  return acceptedFriends().some((f) => f.id === id);
+}
+
 function mayRing(id) {
-  if (acceptedFriends().some((f) => f.id === id)) return true;
+  if (isFriend(id)) return !!trustedConn(id); // a friend's ID only counts once they've proven it's them
   const introducedAt = introducedPeers.get(id);
   return calls.size > 0 && !!introducedAt && Date.now() - introducedAt < INTRODUCTION_TTL_MS;
 }
 
 function admitIncomingCall(call) {
+  let hungUp = false;
+  call.on('close', () => { hungUp = true; });
+  if (isFriend(call.peer)) {
+    // Their identity check is usually still in flight — see waitForTrust.
+    waitForTrust(call.peer, IDENTITY_TIMEOUT_MS).then((trusted) => {
+      if (hungUp) return;
+      if (trusted) ringIncomingCall(call);
+      else declineCall(call);
+    });
+    return;
+  }
   if (mayRing(call.peer)) { ringIncomingCall(call); return; }
   if (calls.size === 0) { declineCall(call); return; }
   // Mid-call, a stranger may be a friend-of-a-friend joining: the introduction
   // for them goes out at the same moment they start dialing, and can land just
   // after their call does. Give it a few seconds before deciding.
-  let hungUp = false;
-  call.on('close', () => { hungUp = true; });
   setTimeout(() => {
     if (hungUp) return;
     if (mayRing(call.peer)) ringIncomingCall(call);
@@ -2887,6 +3088,7 @@ function showWhatsNewIfJustUpdated() {
 async function init() {
   applyStaticTranslations(); // before anything renders, including the username prompt modal
   await initSecureStore();
+  await initIdentity();
   chatHistories = loadChatHistories();
   pendingMessages = loadPendingMessages();
   unreadCounts = loadUnreadCounts();
