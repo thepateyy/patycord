@@ -29,10 +29,8 @@ const usernameInput = document.getElementById('usernameInput');
 const usernameSaveBtn = document.getElementById('usernameSaveBtn');
 const copyBtn = document.getElementById('copyBtn');
 const peerIdInput = document.getElementById('peerIdInput');
-const callBtn = document.getElementById('callBtn');
+const sendRequestBtn = document.getElementById('sendRequestBtn');
 const peerListEl = document.getElementById('peerList');
-const friendsCountLabelEl = document.getElementById('friendsCountLabel');
-const pendingCardEl = document.getElementById('pendingCard');
 const pendingListEl = document.getElementById('pendingList');
 const muteBtn = document.getElementById('muteBtn');
 const shareScreenBtn = document.getElementById('shareScreenBtn');
@@ -41,16 +39,44 @@ const logToggleBtn = document.getElementById('logToggleBtn');
 const logPanel = document.getElementById('logPanel');
 const statusEl = document.getElementById('status');
 const incomingCallsEl = document.getElementById('incomingCalls');
-const friendRequestsEl = document.getElementById('friendRequests');
 const toastsEl = document.getElementById('toasts');
 const screenGridEl = document.getElementById('screenGrid');
 const callTitleEl = document.getElementById('callTitle');
 const callParticipantsEl = document.getElementById('callParticipants');
-const callEmptyStateEl = document.getElementById('callEmptyState');
 const usernameAvatar = document.getElementById('usernameAvatar');
-const chatPanelEl = document.getElementById('chatPanel');
+const mainEl = document.getElementById('main');
+const homeBtn = document.getElementById('homeBtn');
+const homeBadgeEl = document.getElementById('homeBadge');
+const railUnreadEl = document.getElementById('railUnread');
+const railAddBtn = document.getElementById('railAddBtn');
+const dmSearchEl = document.getElementById('dmSearch');
+const friendsNavBtn = document.getElementById('friendsNavBtn');
+const friendsNavBadgeEl = document.getElementById('friendsNavBadge');
+const dmAddBtn = document.getElementById('dmAddBtn');
+const dmListEl = document.getElementById('dmList');
+const voicePanelEl = document.getElementById('voicePanel');
+const voiceInfoEl = document.getElementById('voiceInfo');
+const voiceStatusIconEl = document.getElementById('voiceStatusIcon');
+const voiceStatusTextEl = document.getElementById('voiceStatusText');
+const voiceSubEl = document.getElementById('voiceSub');
+const panelShareBtn = document.getElementById('panelShareBtn');
+const panelLeaveBtn = document.getElementById('panelLeaveBtn');
+const panelMuteBtn = document.getElementById('panelMuteBtn');
+const userInfoEl = document.getElementById('userInfo');
+const myTagEl = document.getElementById('myTag');
+const friendsTabBtns = document.querySelectorAll('.friendsTab');
+const pendingTabBadgeEl = document.getElementById('pendingTabBadge');
+const noMicBarEl = document.getElementById('noMicBar');
+const friendsSearchRowEl = document.getElementById('friendsSearchRow');
+const friendsSearchEl = document.getElementById('friendsSearch');
+const friendsListLabelEl = document.getElementById('friendsListLabel');
+const friendsEmptyEl = document.getElementById('friendsEmpty');
+const addFriendPaneEl = document.getElementById('addFriendPane');
+const welcomeStepsEl = document.getElementById('welcomeSteps');
+const dmHeaderStatusEl = document.getElementById('dmHeaderStatus');
+const dmCallBtn = document.getElementById('dmCallBtn');
+const callChatToggleBtn = document.getElementById('callChatToggleBtn');
 const chatHeaderNameEl = document.getElementById('chatHeaderName');
-const chatCloseBtn = document.getElementById('chatCloseBtn');
 const chatMessagesEl = document.getElementById('chatMessages');
 const chatInputEl = document.getElementById('chatInput');
 const chatSendBtn = document.getElementById('chatSendBtn');
@@ -98,9 +124,9 @@ const pendingFriendRequests = new Map(); // peerId -> name, awaiting Accept/Decl
 let chatHistories = new Map(); // peerId -> [{ fromId, text }], per-friend DMs — independent of calls, persisted encrypted (see secureStore)
 let pendingMessages = new Map(); // peerId -> [{ type, scope, text }], DMs sent while they were offline — flushed once a connection to them opens
 let unreadCounts = new Map(); // peerId -> DMs from them not yet seen (their thread wasn't open), persisted like the rest
-let openChatPeerId = null; // whichever friend's DM thread is currently showing, or null (showing call chat / nothing)
+let openChatPeerId = null; // whichever friend's DM thread is currently showing — set exactly when currentView is 'dm'
 let callChatHistory = []; // shared broadcast thread for whoever's in the current call — resets when the call ends, like it always has
-let wasInCall = false; // so renderCallPanel() can detect the moment a call actually ends, to reset callChatHistory
+let wasInCall = false; // so syncCallState() can detect the moment a call starts or ends
 
 // Peer IDs and call metadata come from whoever is calling us — including strangers,
 // not just saved friends — so they must never go into innerHTML unescaped.
@@ -166,6 +192,13 @@ const ICONS = {
   phone: icon('<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>'),
   phoneOff: icon('<path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67m-2.67-3.34a19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91"/><line x1="23" y1="1" x2="1" y2="23"/>'),
   chat: icon('<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>'),
+  users: icon('<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>'),
+  plus: icon('<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>'),
+  check: icon('<polyline points="20 6 9 17 4 12"/>'),
+  x: icon('<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>'),
+  at: icon('<circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/>'),
+  send: icon('<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>'),
+  signal: icon('<path d="M2 20h.01"/><path d="M7 20v-4"/><path d="M12 20v-8"/><path d="M17 20V8"/><path d="M22 4v16"/>'),
   maximize: icon('<path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>'),
   minimize: icon('<path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/>'),
 };
@@ -391,8 +424,14 @@ function setMyUsername(name) {
   secureStore.myUsername = name;
   saveSecureStore();
   myNameEl.textContent = name;
+  myTagEl.textContent = myTagText();
   profileAvatarEl.textContent = initialsFor(name);
   profileAvatarEl.style.background = colorForId(getMyPersistentId());
+}
+
+// The "#1234" under your name in the bottom-left corner — the same suffix friends see on your tag.
+function myTagText() {
+  return `#${getMyPersistentId().slice(-4).toUpperCase()}`;
 }
 
 // Blocks until the user has set a username — shown once on first launch, and
@@ -535,6 +574,7 @@ function renderMyActivity() {
   } else {
     myActivityEl.hidden = true;
   }
+  myTagEl.hidden = !!myActivity;
 }
 
 function setPeerActivity(id, activity) {
@@ -563,7 +603,7 @@ function removeFriend(id) {
   pendingMessages.delete(id);
   savePendingMessages();
   setUnread(id, 0);
-  if (openChatPeerId === id) closeChat();
+  if (openChatPeerId === id) { openChatPeerId = null; currentView = 'friends'; }
   if (!calls.has(id)) { dataConnections.get(id)?.close(); dataConnections.delete(id); } // keep it if still mid-call
   renderPeerList();
 }
@@ -688,30 +728,46 @@ function toast(msg, type = 'error') {
   setTimeout(() => el.remove(), 5000);
 }
 
-// Outgoing friend requests we've sent that the other side hasn't accepted
-// (or declined) yet — kept separate from the real Friends list below.
-function renderPendingList() {
-  const pending = pendingOutgoingFriends();
-  pendingCardEl.hidden = pending.length === 0;
-  pendingListEl.innerHTML = '';
-  for (const friend of pending) {
-    const name = nameFor(friend);
-    const li = document.createElement('li');
-    li.className = 'friendRow';
-    li.innerHTML = `
-      <span class="who" title="${escapeHtml(tagFor(friend.id, name))}">
-        <span class="avatarWrap">${avatarHtml(friend.id, name)}</span>
-        <span class="who-text">
-          <span class="name">${escapeHtml(name)}</span>
-          <span class="status">${t('sidebar.waiting')}</span>
-        </span>
-      </span>
-      <span class="actions">
-        <button class="removeBtn ghost" title="${t('sidebar.cancelRequest')}">×</button>
-      </span>`;
-    li.querySelector('.removeBtn').addEventListener('click', () => removeFriend(friend.id));
-    pendingListEl.appendChild(li);
-  }
+// --- views -----------------------------------------------------------------
+// Laid out like Discord: a rail, a sidebar with your DMs and yourself, and a
+// main panel showing exactly one of the Friends page (Online / All / Pending /
+// Add Friend), one friend's DMs, or the call. openChatPeerId is set exactly
+// when it's showing DMs.
+
+let currentView = 'friends'; // 'friends' | 'dm' | 'call'
+let friendsTab = 'online'; // 'online' | 'all' | 'pending' | 'add' — init() opens on Add Friend until there's someone to list
+let viewBeforeCall = null; // the friend whose DMs were open when the call started, to go back to once it ends
+let callChatOpen = true;
+let dmFilter = '';
+let friendsFilter = '';
+
+function showFriends(tab = friendsTab) {
+  openChatPeerId = null;
+  currentView = 'friends';
+  friendsTab = tab;
+  renderPeerList();
+  if (tab === 'add') peerIdInput.focus();
+}
+
+function showCallView() {
+  if (calls.size === 0) return;
+  enterCallView();
+  renderPeerList();
+}
+
+// The state change alone, without a render — for syncCallState, which runs mid-render.
+function enterCallView() {
+  openChatPeerId = null;
+  currentView = 'call';
+  showCallChat();
+}
+
+function renderView() {
+  mainEl.dataset.view = currentView;
+  mainEl.classList.toggle('callChatHidden', !callChatOpen);
+  callChatToggleBtn.classList.toggle('on', callChatOpen);
+  friendsNavBtn.classList.toggle('active', currentView === 'friends');
+  for (const btn of friendsTabBtns) btn.classList.toggle('active', btn.dataset.tab === friendsTab);
 }
 
 // A presence sweep (probeAllFriends) settles up to one probe per friend within
@@ -751,126 +807,287 @@ function friendStatusHtml({ inCall, connected, isOnline, activity }) {
   return `<span class="status${isOnline ? ' online' : ''}">${isOnline ? t('status.online') : t('status.offline')}</span>`;
 }
 
-function renderPeerList() {
-  renderPendingList();
-  const friends = acceptedFriends();
-  peerListEl.innerHTML = '';
+function badgeText(n) {
+  return n > 99 ? '99+' : String(n);
+}
 
-  if (friends.length === 0 && calls.size === 0) {
-    const li = document.createElement('li');
-    li.className = 'empty';
-    li.textContent = t('sidebar.noFriends');
-    peerListEl.appendChild(li);
-  }
+function matchesFilter(name, filter) {
+  return name.toLowerCase().includes(filter.trim().toLowerCase());
+}
 
-  const rows = friends.map((friend) => {
+function lastMessageAt(id) {
+  return chatHistories.get(id)?.at(-1)?.ts || 0;
+}
+
+function friendRows() {
+  const rows = acceptedFriends().map((friend) => {
     const inCall = calls.has(friend.id);
     const connected = !!calls.get(friend.id)?.audioEl; // stream actually flowing, not just dialing
     const isOnline = connected || !!presence.get(friend.id);
-    return { friend, name: nameFor(friend), inCall, connected, isOnline };
+    return {
+      id: friend.id, name: nameFor(friend), inCall, connected, isOnline,
+      activity: isOnline ? activityByPeer.get(friend.id) : null,
+      unread: unreadCounts.get(friend.id) || 0,
+    };
   });
   // Whoever you can actually talk to right now goes to the top: in the call,
   // then online, then offline — alphabetical within each.
   const rank = (r) => (r.inCall ? 0 : r.isOnline ? 1 : 2);
-  rows.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+  return rows.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+}
 
-  for (const { friend, name, inCall, connected, isOnline } of rows) {
-    const activity = isOnline ? activityByPeer.get(friend.id) : null;
-    const confirming = confirmRemoveId === friend.id;
-    const li = document.createElement('li');
-    const unread = unreadCounts.get(friend.id) || 0;
-    li.className = 'friendRow' + (unread ? ' unread' : '');
-    li.innerHTML = `
-      <span class="who" title="${escapeHtml(tagFor(friend.id, name))}">
-        <span class="avatarWrap">
-          ${avatarHtml(friend.id, name)}
-          <span class="dot ${isOnline ? 'online' : ''}"></span>
-        </span>
-        <span class="who-text">
-          <span class="name">${escapeHtml(name)}</span>
-          ${friendStatusHtml({ inCall, connected, isOnline, activity })}
-        </span>
-      </span>
-      <span class="actions">
-        ${confirming ? '' : `
-        ${inCall || isOnline ? `<button class="callToggleBtn ${inCall ? 'hangupBtn' : 'callBtnIcon'}" title="${inCall ? (connected ? t('sidebar.hangUp') : t('sidebar.cancel')) : t('sidebar.call')}"></button>` : ''}
-        <button class="chatToggleBtn${friend.id === openChatPeerId ? ' active' : ''}${isOnline ? '' : ' offline'}" title="${isOnline ? t('sidebar.chat') : t('sidebar.chatOffline')}"></button>`}
-        <button class="removeBtn ghost${confirming ? ' confirm' : ''}" title="${t('sidebar.remove')}">${confirming ? t('sidebar.removeConfirm') : '×'}</button>
-      </span>`;
-    const callToggleBtn = li.querySelector('.callToggleBtn');
-    if (callToggleBtn) {
-      callToggleBtn.innerHTML = inCall ? ICONS.phoneOff : ICONS.phone;
-      callToggleBtn.addEventListener('click', () => {
-        if (calls.has(friend.id)) hangUp(friend.id);
-        else connectTo(friend.id);
-      });
-    }
-    const chatToggleBtn = li.querySelector('.chatToggleBtn');
-    if (chatToggleBtn) {
-      chatToggleBtn.innerHTML = ICONS.chat;
-      if (unread) chatToggleBtn.insertAdjacentHTML('beforeend', `<span class="unreadBadge">${unread > 99 ? '99+' : unread}</span>`);
-      chatToggleBtn.addEventListener('click', () => {
-        if (openChatPeerId === friend.id) closeChat();
-        else openChatWith(friend.id);
-      });
-    }
-    li.querySelector('.removeBtn').addEventListener('click', () => requestRemoveFriend(friend.id));
-    peerListEl.appendChild(li);
-  }
-
-  // Anyone connected who isn't a saved friend (e.g. joined via mesh discovery, or
-  // someone who called us but we haven't added) — still needs a way to hang up.
-  const friendIds = new Set(friends.map((f) => f.id));
-  for (const id of calls.keys()) {
-    if (friendIds.has(id)) continue;
-    const name = friendName(id);
-    const li = document.createElement('li');
-    li.className = 'friendRow';
-    li.innerHTML = `
-      <span class="who" title="${escapeHtml(tagFor(id, name))}">
-        <span class="avatarWrap">${avatarHtml(id, name)}<span class="dot online"></span></span>
-        <span class="who-text">
-          <span class="name">${escapeHtml(name)}</span>
-          ${friendStatusHtml({ inCall: true, connected: !!calls.get(id).audioEl })}
-        </span>
-      </span>
-      <span class="actions">
-        <button class="callToggleBtn hangupBtn" title="${t('sidebar.hangUp')}"></button>
-      </span>`;
-    const hangupBtn = li.querySelector('.callToggleBtn');
-    hangupBtn.innerHTML = ICONS.phoneOff;
-    hangupBtn.addEventListener('click', () => hangUp(id));
-    peerListEl.appendChild(li);
-  }
-
-  friendsCountLabelEl.textContent = friends.length
-    ? t('sidebar.friends', { online: rows.filter((r) => r.isOnline).length })
-    : t('sidebar.friendsTitle');
+function renderPeerList() {
+  syncCallState(); // first, so a call starting or ending switches the view before anything draws
+  const rows = friendRows();
+  renderDmList(rows);
+  renderRail(rows);
+  renderFriendsPage(rows);
+  renderDmHeader(rows);
   renderCallPanel();
 }
 
-// The main panel's "who's in this call right now" view — separate from the
-// sidebar's friends list, which is about who you *know*, not who's connected.
-function renderCallPanel() {
-  closeVolumePopover(); // chip buttons are about to be torn down and rebuilt
+// The sidebar's conversations — most recent first, like Discord.
+function renderDmList(rows) {
+  dmListEl.innerHTML = '';
+  if (!rows.length) {
+    dmListEl.innerHTML = `<li class="dmEmpty">${t('nav.noDms')}</li>`;
+    return;
+  }
+  const sorted = [...rows].sort((a, b) => (b.inCall - a.inCall) || lastMessageAt(b.id) - lastMessageAt(a.id)
+    || (b.isOnline - a.isOnline) || a.name.localeCompare(b.name));
+  for (const r of sorted.filter((row) => matchesFilter(row.name, dmFilter))) {
+    const li = document.createElement('li');
+    li.className = 'dmRow' + (r.id === openChatPeerId ? ' active' : '') + (r.unread ? ' unread' : '') + (r.isOnline ? '' : ' offline');
+    li.title = tagFor(r.id, r.name);
+    li.innerHTML = `
+      <span class="avatarWrap">${avatarHtml(r.id, r.name)}<span class="dot${r.isOnline ? ' online' : ''}"></span></span>
+      <span class="who-text">
+        <span class="name">${escapeHtml(r.name)}</span>
+        ${friendStatusHtml(r)}
+      </span>
+      ${r.unread ? `<span class="unreadBadge">${badgeText(r.unread)}</span>` : ''}`;
+    li.addEventListener('click', () => openChatWith(r.id));
+    dmListEl.appendChild(li);
+  }
+}
+
+// Friend requests waiting on you badge the rail's home button, the Friends nav
+// item and the Pending tab; friends with unread DMs get their own rail button.
+function renderRail(rows) {
+  const requests = pendingFriendRequests.size;
+  for (const el of [homeBadgeEl, friendsNavBadgeEl, pendingTabBadgeEl]) {
+    el.hidden = !requests;
+    el.textContent = badgeText(requests);
+  }
+  railUnreadEl.innerHTML = '';
+  for (const r of rows.filter((row) => row.unread).slice(0, 5)) {
+    const btn = document.createElement('button');
+    btn.className = 'railBtn avatarBtn';
+    btn.title = r.name;
+    btn.innerHTML = `${avatarHtml(r.id, r.name)}<span class="railBadge">${badgeText(r.unread)}</span>`;
+    btn.addEventListener('click', () => openChatWith(r.id));
+    railUnreadEl.appendChild(btn);
+  }
+}
+
+function renderFriendsPage(rows) {
+  const tab = friendsTab;
+  const listTab = tab === 'online' || tab === 'all';
+  noMicBarEl.hidden = !micAccessFailed;
+  if (micAccessFailed) noMicBarEl.innerHTML = `<strong>${t('main.noMicTitle')}</strong> — ${t('main.noMic')}`;
+  pendingListEl.hidden = tab !== 'pending';
+  addFriendPaneEl.hidden = tab !== 'add';
+  friendsSearchRowEl.hidden = !listTab;
+  friendsListLabelEl.hidden = tab === 'add';
+  renderWelcomeSteps(rows.length === 0);
+  peerListEl.innerHTML = '';
+  pendingListEl.innerHTML = '';
+
+  let empty = null;
+  if (listTab) {
+    const inTab = tab === 'online' ? rows.filter((r) => r.isOnline || r.inCall) : rows;
+    const shown = inTab.filter((r) => matchesFilter(r.name, friendsFilter));
+    friendsListLabelEl.textContent = t(tab === 'online' ? 'friends.onlineCount' : 'friends.allCount', { count: shown.length });
+    for (const r of shown) peerListEl.appendChild(friendRowEl(r));
+    if (!rows.length) empty = 'noFriends';
+    else if (!inTab.length) empty = 'noneOnline';
+    else if (!shown.length) empty = 'noMatch';
+  } else if (tab === 'pending') {
+    const outgoing = pendingOutgoingFriends();
+    friendsListLabelEl.textContent = t('friends.pendingCount', { count: pendingFriendRequests.size + outgoing.length });
+    for (const [id, name] of pendingFriendRequests) pendingListEl.appendChild(pendingRowEl(id, name || t('unknown'), true));
+    for (const friend of outgoing) pendingListEl.appendChild(pendingRowEl(friend.id, nameFor(friend), false));
+    if (!pendingFriendRequests.size && !outgoing.length) empty = 'noPending';
+  }
+  peerListEl.hidden = !listTab || !!empty;
+  if (empty) pendingListEl.hidden = true;
+  renderFriendsEmpty(empty);
+}
+
+function friendRowEl({ id, name, inCall, connected, isOnline, activity, unread }) {
+  const confirming = confirmRemoveId === id;
+  const li = document.createElement('li');
+  li.className = 'friendRow';
+  li.innerHTML = `
+    <span class="who">
+      <span class="avatarWrap">${avatarHtml(id, name)}<span class="dot${isOnline ? ' online' : ''}"></span></span>
+      <span class="who-text">
+        <span class="nameLine"><span class="name">${escapeHtml(name)}</span><span class="tagHash">#${escapeHtml(id.slice(-4).toUpperCase())}</span></span>
+        ${friendStatusHtml({ inCall, connected, isOnline, activity })}
+      </span>
+    </span>
+    <span class="actions">
+      ${confirming ? '' : `
+      <button class="roundBtn chatToggleBtn" title="${isOnline ? t('friends.message') : t('sidebar.chatOffline')}">${ICONS.chat}${unread ? `<span class="unreadBadge">${badgeText(unread)}</span>` : ''}</button>
+      ${inCall || isOnline ? `<button class="roundBtn callToggleBtn${inCall ? ' hangupBtn' : ''}" title="${inCall ? (connected ? t('sidebar.hangUp') : t('sidebar.cancel')) : t('sidebar.call')}">${inCall ? ICONS.phoneOff : ICONS.phone}</button>` : ''}`}
+      <button class="roundBtn removeBtn${confirming ? ' confirm' : ''}" title="${t('sidebar.remove')}">${confirming ? t('sidebar.removeConfirm') : ICONS.x}</button>
+    </span>`;
+  li.addEventListener('click', (e) => { if (!e.target.closest('button')) openChatWith(id); });
+  li.querySelector('.chatToggleBtn')?.addEventListener('click', () => openChatWith(id));
+  li.querySelector('.callToggleBtn')?.addEventListener('click', () => {
+    if (calls.has(id)) hangUp(id);
+    else connectTo(id);
+  });
+  li.querySelector('.removeBtn').addEventListener('click', () => requestRemoveFriend(id));
+  return li;
+}
+
+// `incoming`: someone asking us (Accept/Decline), vs. a request we sent that
+// they haven't answered yet (Cancel).
+function pendingRowEl(id, name, incoming) {
+  const li = document.createElement('li');
+  li.className = 'friendRow pendingRow' + (incoming ? ' incoming' : '');
+  li.innerHTML = `
+    <span class="who" title="${escapeHtml(tagFor(id, name))}">
+      <span class="avatarWrap">${avatarHtml(id, name)}</span>
+      <span class="who-text">
+        <span class="nameLine"><span class="name">${escapeHtml(name)}</span><span class="tagHash">#${escapeHtml(id.slice(-4).toUpperCase())}</span></span>
+        <span class="status">${incoming ? t('friends.incomingRequest') : t('sidebar.waiting')}</span>
+      </span>
+    </span>
+    <span class="actions">
+      ${incoming ? `<button class="roundBtn acceptBtn" title="${t('accept')}">${ICONS.check}</button>` : ''}
+      <button class="roundBtn declineBtn" title="${incoming ? t('decline') : t('sidebar.cancelRequest')}">${ICONS.x}</button>
+    </span>`;
+  if (!incoming) {
+    li.querySelector('.declineBtn').addEventListener('click', () => removeFriend(id));
+    return li;
+  }
+  const rawName = pendingFriendRequests.get(id);
+  li.querySelector('.acceptBtn').addEventListener('click', () => {
+    pendingFriendRequests.delete(id);
+    learnName(id, rawName);
+    addFriend(id);
+    dataConnections.get(id)?.send({ type: 'friend-accept' });
+    toast(t('toast.addedFriend', { name: rawName || t('them') }), 'info');
+    renderPeerList();
+  });
+  li.querySelector('.declineBtn').addEventListener('click', () => {
+    pendingFriendRequests.delete(id);
+    dataConnections.get(id)?.send({ type: 'friend-decline' });
+    renderPeerList();
+  });
+  return li;
+}
+
+// Only rebuilt when what it says changes (renderPeerList runs on every presence
+// sweep); applyLanguage resets friendsEmptyKind to force a rebuild in the new language.
+let friendsEmptyKind = null;
+function renderFriendsEmpty(kind) {
+  friendsEmptyEl.hidden = !kind;
+  const key = kind === 'noMatch' ? `noMatch:${friendsFilter}` : kind;
+  if (!kind || key === friendsEmptyKind) return;
+  friendsEmptyKind = key;
+  const art = (svg) => `<div class="emptyArt">${svg}</div>`;
+  if (kind === 'noFriends') {
+    friendsEmptyEl.innerHTML = `${art(ICONS.users)}<h3>${t('friends.noFriends')}</h3><p>${t('friends.noFriendsDesc')}</p>
+      <button class="emptyAddBtn">${t('friends.add')}</button>`;
+    friendsEmptyEl.querySelector('.emptyAddBtn').addEventListener('click', () => showFriends('add'));
+  } else if (kind === 'noneOnline') {
+    friendsEmptyEl.innerHTML = `${art(ICONS.users)}<h3>${t('friends.noneOnline')}</h3><p>${t('friends.noneOnlineDesc')}</p>`;
+  } else if (kind === 'noPending') {
+    friendsEmptyEl.innerHTML = `${art(ICONS.check)}<p>${t('friends.noPending')}</p>`;
+  } else {
+    friendsEmptyEl.innerHTML = `<p>${escapeHtml(t('friends.noMatch', { query: friendsFilter.trim() }))}</p>`;
+  }
+}
+
+// Under Add Friend until you have your first friend — how the whole thing works.
+function renderWelcomeSteps(show) {
+  if (!show) { welcomeStepsEl.innerHTML = ''; return; }
+  if (welcomeStepsEl.childElementCount) return;
+  const step = (n, title, desc) => `
+    <li><span class="stepNum">${n}</span><span>${title}<small>${desc}</small></span></li>`;
+  welcomeStepsEl.innerHTML = `
+    <h3>${t('friends.howItWorks')}</h3>
+    <ol class="steps">
+      ${step(1, t('main.step1'), t('main.step1Desc'))}
+      ${step(2, t('main.step2'), t('main.step2Desc'))}
+      ${step(3, t('main.step3'), t('main.step3Desc'))}
+    </ol>`;
+}
+
+function renderDmHeader(rows) {
+  if (currentView !== 'dm') return;
+  const id = openChatPeerId;
+  const row = rows.find((r) => r.id === id);
+  chatHeaderNameEl.textContent = friendName(id);
+  dmHeaderStatusEl.innerHTML = row ? `<span class="dot${row.isOnline ? ' online' : ''}"></span>${friendStatusHtml(row)}` : '';
+  const inCall = calls.has(id);
+  dmCallBtn.hidden = !inCall && !row?.isOnline;
+  dmCallBtn.classList.toggle('inCall', inCall);
+  dmCallBtn.title = inCall ? t('dm.goToCall') : t('sidebar.call');
+}
+
+// Notices the moment a call starts or ends, whatever caused it. Starting or
+// answering one is always something you just did, so it takes you to the call;
+// when it ends you go back to the DMs you were in, or the Friends page.
+function syncCallState() {
   const inCall = calls.size > 0;
-  renderEmptyState(inCall);
+  if (inCall === wasInCall) return;
+  wasInCall = inCall;
+  if (inCall) {
+    startMic(); startSpeakingWatch(); syncPushToTalk();
+    viewBeforeCall = currentView === 'dm' ? openChatPeerId : null;
+    enterCallView();
+    return;
+  }
+  stopMic(); stopSpeakingWatch(); syncPushToTalk();
+  if (screenStream) stopScreenShare(); // no one left to send it to
+  callChatHistory = []; // call chat ends with the call, like it always has
+  if (currentView === 'call') {
+    if (viewBeforeCall && acceptedFriends().some((f) => f.id === viewBeforeCall)) enterDm(viewBeforeCall);
+    else currentView = 'friends';
+  }
+  viewBeforeCall = null;
+}
+
+function tileColorForId(id) {
+  return `hsl(${hashHue(id)}, 32%, 20%)`;
+}
+
+// The call view's tiles, one per person (you first), plus the sidebar's
+// "Voice connected" panel that gets you back here from anywhere.
+function renderCallPanel() {
+  syncCallState();
+  closeVolumePopover(); // tile buttons are about to be torn down and rebuilt
+  const inCall = calls.size > 0;
   callTitleEl.hidden = !inCall;
   callTitleEl.textContent = t('main.inCall', { count: calls.size + 1 }); // +1 for us
   callParticipantsEl.innerHTML = '';
 
-  // Ourselves first, so it's obvious at a glance whether we're muted.
   if (inCall) {
     const me = document.createElement('div');
     me.className = 'participant' + (speakingNow.has(SELF) ? ' speaking' : '');
     me.dataset.peerId = SELF;
+    me.style.setProperty('--tile', tileColorForId(getMyPersistentId()));
     me.innerHTML = `
-      <span class="avatarWrap">
-        ${avatarHtml(getMyPersistentId(), getMyUsername())}
-        ${muted ? `<span class="mutedBadge" title="${t('main.muted')}">${ICONS.micOff}</span>` : ''}
-      </span>
-      <span class="pname">${escapeHtml(getMyUsername())}</span>
-      <span class="pname sub">${muted ? t('main.muted') : pushToTalkActive() ? t('main.pttHint', { key: escapeHtml(getPttKey().label) }) : t('main.you')}</span>`;
+      ${avatarHtml(getMyPersistentId(), getMyUsername())}
+      <span class="tileLabel">
+        ${muted ? ICONS.micOff : ''}
+        <span class="pname">${escapeHtml(getMyUsername())}</span>
+        <span class="sub">${muted ? t('main.muted') : pushToTalkActive() ? t('main.pttHint', { key: escapeHtml(getPttKey().label) }) : t('main.you')}</span>
+      </span>`;
     callParticipantsEl.appendChild(me);
   }
 
@@ -879,12 +1096,14 @@ function renderCallPanel() {
     const div = document.createElement('div');
     div.className = 'participant' + (entry.audioEl ? '' : ' dialing') + (speakingNow.has(id) ? ' speaking' : '');
     div.dataset.peerId = id;
+    div.style.setProperty('--tile', tileColorForId(id));
     div.innerHTML = `
       ${avatarHtml(id, name)}
-      <span class="pname">${escapeHtml(name)}</span>
-      ${entry.audioEl
-        ? `<button class="volumeBtn ghost" title="${t('main.volume')}"></button>`
-        : `<span class="pname sub">${t('main.calling')}</span>`}`;
+      <span class="tileLabel">
+        <span class="pname">${escapeHtml(name)}</span>
+        ${entry.audioEl ? '' : `<span class="sub">${t('main.calling')}</span>`}
+      </span>
+      ${entry.audioEl ? `<button class="volumeBtn" title="${t('main.volume')}"></button>` : ''}`;
     if (entry.audioEl) {
       const volumeBtn = div.querySelector('.volumeBtn');
       updateVolumeIcon(volumeBtn, entry.audioEl.volume);
@@ -893,55 +1112,28 @@ function renderCallPanel() {
     callParticipantsEl.appendChild(div);
   }
 
-  // Mute/share/leave are call-specific — hide them the rest of the time, and drop
-  // any in-progress screen share once there's no one left to send it to.
-  muteBtn.hidden = !inCall;
-  shareScreenBtn.hidden = !inCall;
-  leaveCallBtn.hidden = !inCall;
-  if (!inCall && screenStream) stopScreenShare();
-
-  if (wasInCall && !inCall) callChatHistory = []; // call chat ends with the call, like it always has
-  if (inCall && !wasInCall) { startMic(); startSpeakingWatch(); syncPushToTalk(); }
-  else if (!inCall && wasInCall) { stopMic(); stopSpeakingWatch(); syncPushToTalk(); }
-  wasInCall = inCall;
-  updateChatView();
+  voicePanelEl.hidden = !inCall;
+  if (inCall) {
+    const anyConnected = [...calls.values()].some((entry) => entry.audioEl);
+    voicePanelEl.classList.toggle('dialing', !anyConnected);
+    voiceStatusTextEl.textContent = anyConnected ? t('voice.connected') : t('status.calling');
+    voiceSubEl.textContent = [...calls.keys()].map(friendName).join(', ');
+  }
+  renderView();
 }
 
-// What the main panel says when there's no call — tailored to what you can
-// actually do next: fix the mic, get your first friend added, or call someone.
-// Only rebuilt when that changes (renderCallPanel runs on every presence sweep);
-// applyLanguage resets emptyStateVariant to force a re-render in the new language.
-let emptyStateVariant = null;
-function renderEmptyState(inCall) {
-  callEmptyStateEl.hidden = inCall;
-  if (inCall) return;
-  const variant = micAccessFailed ? 'noMic' : acceptedFriends().length === 0 ? 'welcome' : 'idle';
-  if (variant === emptyStateVariant) return;
-  emptyStateVariant = variant;
+function renderMuteButtons() {
+  for (const btn of [muteBtn, panelMuteBtn]) {
+    btn.title = muted ? t('main.unmute') : t('main.mute');
+    btn.classList.toggle('active', muted);
+    btn.innerHTML = muted ? ICONS.micOff : ICONS.mic;
+  }
+}
 
-  if (variant === 'noMic') {
-    callEmptyStateEl.innerHTML = `
-      ${ICONS.micOff}
-      <h2>${t('main.noMicTitle')}</h2>
-      <p>${t('main.noMic')}</p>`;
-  } else if (variant === 'welcome') {
-    const step = (n, title, desc, extra = '') => `
-      <li><span class="stepNum">${n}</span><span>${title}<small>${desc}</small>${extra}</span></li>`;
-    callEmptyStateEl.innerHTML = `
-      <h2>${t('main.welcomeTitle')}</h2>
-      <p>${t('main.welcomeIntro')}</p>
-      <ol class="steps">
-        ${step(1, t('main.step1'), t('main.step1Desc'), `<button class="secondary welcomeCopyBtn" style="margin-top:8px;">${t('main.copyMyId')}</button>`)}
-        ${step(2, t('main.step2'), t('main.step2Desc'))}
-        ${step(3, t('main.step3'), t('main.step3Desc'))}
-      </ol>`;
-    const welcomeCopyBtn = callEmptyStateEl.querySelector('.welcomeCopyBtn');
-    welcomeCopyBtn.addEventListener('click', () => copyMyId(welcomeCopyBtn, () => t('main.copyMyId')));
-  } else {
-    callEmptyStateEl.innerHTML = `
-      ${ICONS.phone}
-      <h2>${t('main.notInCallTitle')}</h2>
-      <p>${t('main.notInCall', { dot: '<span class="inlineDot"></span>', phone: `<span class="inlineIcon">${ICONS.phone}</span>` })}</p>`;
+function renderShareButtons() {
+  for (const btn of [shareScreenBtn, panelShareBtn]) {
+    btn.title = screenStream ? t('main.stopSharing') : t('main.shareScreen');
+    btn.classList.toggle('sharing', !!screenStream);
   }
 }
 
@@ -1109,13 +1301,14 @@ function toggleScreenSharePopover(anchorEl) {
   const rect = anchorEl.getBoundingClientRect();
   screenSharePopoverEl.hidden = false;
   const popRect = screenSharePopoverEl.getBoundingClientRect();
-  screenSharePopoverEl.style.left = `${Math.round(rect.left + rect.width / 2 - popRect.width / 2)}px`;
+  const left = Math.min(Math.max(8, rect.left + rect.width / 2 - popRect.width / 2), window.innerWidth - popRect.width - 8);
+  screenSharePopoverEl.style.left = `${Math.round(left)}px`;
   screenSharePopoverEl.style.top = `${Math.round(rect.top - popRect.height - 8)}px`;
 }
 
 document.addEventListener('click', (e) => {
   if (screenSharePopoverEl.hidden) return;
-  if (screenSharePopoverEl.contains(e.target) || e.target.closest('#shareScreenBtn')) return;
+  if (screenSharePopoverEl.contains(e.target) || e.target.closest('.shareScreenTrigger')) return;
   closeScreenSharePopover();
 });
 
@@ -1326,8 +1519,8 @@ function handleDataMessage(fromId, msg) {
       // 'call' scope (or unmarked, from an older client) — only from someone actually in the call with us.
       if (!calls.has(fromId)) return;
       addCallChatMessage(fromId, text, wireTimestamp(msg.ts));
-      // Only worth a toast if call chat isn't the thing currently on screen — e.g. a DM is open instead.
-      if (openChatPeerId !== null) toast(t('toast.newCallMessage', { name: friendName(fromId) }), 'info');
+      // Only worth a toast if call chat isn't the thing currently on screen.
+      if (currentView !== 'call') toast(t('toast.newCallMessage', { name: friendName(fromId) }), 'info');
     }
   } else if (msg.type === 'chat-ack') {
     const id = wireMessageId(msg.id);
@@ -1350,16 +1543,12 @@ function handleDataMessage(fromId, msg) {
 }
 
 // --- chat ----------------------------------------------------------
-// Two independent kinds of thread share one panel:
-//  - DMs: per-friend (chatHistories), available any time a friend is
-//    online, entirely independent of calls. Opened via a friend's chat
-//    button; openChatPeerId tracks which one (if any) is showing.
-//  - Call chat: one shared broadcast thread (callChatHistory) for whoever
-//    is in the current call — the original behavior, auto-shown/hidden
-//    with the call and reset when it ends. Shown whenever no DM is open.
-// A DM being open always takes visual priority over call chat; closing it
-// falls back to call chat if a call is still active, rather than just
-// hiding the panel.
+// Two independent kinds of thread share one message pane:
+//  - DMs: per-friend (chatHistories), entirely independent of calls — the
+//    pane fills the main panel while a friend's DMs are the current view.
+//  - Call chat: one shared broadcast thread (callChatHistory) for whoever is
+//    in the current call, shown beside the call in the call view and reset
+//    when the call ends.
 
 // Today's messages show just the time; anything older gets the date too.
 // Entries saved before timestamps existed have no `ts` and show no time
@@ -1384,14 +1573,38 @@ function wireMessageId(id) {
   return typeof id === 'string' && id.length <= 64 ? id : null;
 }
 
+const GROUP_WINDOW_MS = 7 * 60 * 1000;
+
 // `pending` marks one of our own DMs that hasn't been confirmed delivered yet.
+// Like Discord, a run of messages from the same person a few minutes apart
+// shares one avatar and name, and a new day gets a divider.
 function renderChatMessage({ fromId, text, ts, id }, { pending = false } = {}) {
-  const displayName = fromId === peer.id ? t('chat.you') : friendName(fromId);
+  const isMe = fromId === peer?.id;
+  const displayName = isMe ? getMyUsername() || t('chat.you') : friendName(fromId);
+  const last = chatMessagesEl.lastElementChild;
+  const lastTs = last?.classList.contains('chatMsg') ? Number(last.dataset.ts) : 0;
+  const newDay = !!ts && (!lastTs || new Date(lastTs).toDateString() !== new Date(ts).toDateString());
+  if (newDay) {
+    const divider = document.createElement('div');
+    divider.className = 'dateDivider';
+    divider.textContent = new Date(ts).toLocaleDateString(getLanguage(), { year: 'numeric', month: 'long', day: 'numeric' });
+    chatMessagesEl.appendChild(divider);
+  }
+  const grouped = !newDay && !!lastTs && !!ts && last.dataset.from === fromId && ts - lastTs < GROUP_WINDOW_MS;
   const div = document.createElement('div');
-  div.className = 'chatMsg' + (pending ? ' pending' : '');
+  div.className = 'chatMsg' + (grouped ? ' grouped' : '') + (pending ? ' pending' : '');
+  div.dataset.from = fromId;
+  div.dataset.ts = ts || 0;
   if (id) div.dataset.msgId = id;
   if (pending) div.title = t('chat.notDelivered');
-  div.innerHTML = `<span class="who" style="color:${colorForId(fromId)}">${escapeHtml(displayName)}</span><span class="time">${formatChatTime(ts)}</span><span class="text">${escapeHtml(text)}</span>`;
+  const time = ts ? new Date(ts).toLocaleTimeString(getLanguage(), { hour: '2-digit', minute: '2-digit' }) : '';
+  div.innerHTML = grouped
+    ? `<span class="hoverTime">${time}</span><span class="text">${escapeHtml(text)}</span>`
+    : `${avatarHtml(isMe ? getMyPersistentId() : fromId, displayName)}
+      <div class="msgBody">
+        <div class="msgHead"><span class="msgAuthor">${escapeHtml(displayName)}</span><span class="time">${formatChatTime(ts)}</span></div>
+        <span class="text">${escapeHtml(text)}</span>
+      </div>`;
   chatMessagesEl.appendChild(div);
   chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 }
@@ -1476,66 +1689,56 @@ function addCallChatMessage(fromId, text, ts = Date.now()) {
   const entry = { fromId, text, ts };
   callChatHistory.push(entry);
   if (callChatHistory.length > CHAT_HISTORY_LIMIT) callChatHistory.splice(0, callChatHistory.length - CHAT_HISTORY_LIMIT);
-  if (openChatPeerId === null && calls.size > 0) renderChatMessage(entry);
+  if (currentView === 'call') renderChatMessage(entry);
+}
+
+// The state change alone, without a render — see openChatWith.
+function enterDm(peerId) {
+  ensureDataConnection(peerId); // independent of any call — opens on demand
+  openChatPeerId = peerId;
+  currentView = 'dm';
+  setUnread(peerId, 0);
+  const name = friendName(peerId);
+  chatMessagesEl.innerHTML = `
+    <div class="chatIntro">
+      ${avatarHtml(peerId, name)}
+      <h2>${escapeHtml(name)}</h2>
+      ${tagHtml(peerId, name)}
+      <p>${escapeHtml(t('dm.beginning', { name }))}</p>
+    </div>`;
+  for (const entry of chatHistories.get(peerId) || []) {
+    renderChatMessage(entry, { pending: entry.fromId === peer?.id && isQueued(peerId, entry.id) });
+  }
+  chatInputEl.placeholder = t('dm.placeholder', { name });
 }
 
 function openChatWith(peerId) {
-  ensureDataConnection(peerId); // independent of any call — opens on demand
-  openChatPeerId = peerId;
-  setUnread(peerId, 0);
-  chatHeaderNameEl.textContent = friendName(peerId);
-  chatCloseBtn.hidden = false;
-  chatMessagesEl.innerHTML = '';
-  chatMessagesEl.dataset.empty = t('chat.emptyDm');
-  for (const entry of chatHistories.get(peerId) || []) {
-    renderChatMessage(entry, { pending: entry.fromId === peer.id && isQueued(peerId, entry.id) });
-  }
-  chatPanelEl.hidden = false;
-  chatInputEl.focus();
-  renderPeerList(); // so the right friend's chat button shows as active
-}
-
-// The call-chat view has no close button of its own — like before, it's
-// purely driven by being in a call or not (see renderCallPanel).
-function showCallChat() {
-  chatHeaderNameEl.textContent = t('chat.title');
-  chatCloseBtn.hidden = true;
-  chatMessagesEl.innerHTML = '';
-  chatMessagesEl.dataset.empty = t('chat.emptyCall');
-  for (const entry of callChatHistory) renderChatMessage(entry);
-  chatPanelEl.hidden = false;
-}
-
-// Re-decides what the chat panel should show given current state — call
-// this after anything that could change either side of that (DM open/close,
-// call start/end). A DM wins if one's open; otherwise call chat while in a
-// call; otherwise hide the panel entirely.
-function updateChatView() {
-  if (openChatPeerId !== null) {
-    chatPanelEl.hidden = false;
-    return;
-  }
-  if (calls.size > 0) showCallChat();
-  else chatPanelEl.hidden = true;
-}
-
-function closeChat() {
-  openChatPeerId = null;
-  updateChatView();
+  enterDm(peerId);
   renderPeerList();
+  chatInputEl.focus();
+}
+
+function showCallChat() {
+  chatMessagesEl.innerHTML = `
+    <div class="chatIntro callIntro">
+      <div class="emptyArt">${ICONS.chat}</div>
+      <p>${t('chat.emptyCall')}</p>
+    </div>`;
+  for (const entry of callChatHistory) renderChatMessage(entry);
+  chatInputEl.placeholder = t('call.placeholder');
 }
 
 function sendChatMessage() {
   const text = chatInputEl.value.trim();
   if (!text) return;
-  if (openChatPeerId !== null) {
+  if (currentView === 'dm') {
     const peerId = openChatPeerId;
     const message = { type: 'chat', scope: 'dm', text, id: crypto.randomUUID(), ts: Date.now() };
     ensureDataConnection(peerId);
     queueMessage(peerId, message);
     addChatMessage(peerId, peer.id, text, { ts: message.ts, id: message.id }); // before the flush, so an old-client flush can un-dim it
     flushPendingMessages(peerId); // delivers now if already connected; otherwise on their next hello
-  } else if (calls.size > 0) {
+  } else if (currentView === 'call') {
     const ts = Date.now();
     for (const id of calls.keys()) dataConnections.get(id)?.send({ type: 'chat', scope: 'call', text, ts });
     addCallChatMessage(peer.id, text, ts);
@@ -1693,16 +1896,12 @@ function renderIncomingCalls() {
     const div = document.createElement('div');
     div.className = 'incomingCall';
     div.innerHTML = `
-      <span class="who">
-        ${avatarHtml(id, name)}
-        <span class="who-text">
-          <span class="callLabel">${t('incomingCall.label')}</span>
-          <span class="callName">${escapeHtml(name)}</span>
-        </span>
-      </span>
+      <span class="ringAvatar">${avatarHtml(id, name)}</span>
+      <span class="callName">${escapeHtml(name)}</span>
+      <span class="callLabel">${t('incomingCall.label')}…</span>
       <span class="actions">
-        <button class="acceptBtn">${t('accept')}</button>
-        <button class="declineBtn">${t('decline')}</button>
+        <button class="roundBtn declineBtn" title="${t('decline')}">${ICONS.phoneOff}</button>
+        <button class="roundBtn acceptBtn" title="${t('accept')}">${ICONS.phone}</button>
       </span>`;
     div.querySelector('.acceptBtn').addEventListener('click', () => {
       pendingCalls.delete(id);
@@ -1792,42 +1991,8 @@ function handleFriendRequest(fromId, name) {
   }
   if (pendingFriendRequests.has(fromId)) return; // already showing one from them
   pendingFriendRequests.set(fromId, name);
-  renderFriendRequests(); // the banner itself is the notice — no need for a toast too
+  renderPeerList(); // badges the rail, the Friends button and the Pending tab — no need for a toast too
   notifyDesktop(t('notify.friendRequest', { name: name || t('unknown') }), t('notify.friendRequestBody'));
-}
-
-function renderFriendRequests() {
-  friendRequestsEl.innerHTML = '';
-  for (const [id, name] of pendingFriendRequests) {
-    const div = document.createElement('div');
-    div.className = 'incomingCall';
-    div.innerHTML = `
-      <span class="who">
-        ${avatarHtml(id, name)}
-        <span class="who-text">
-          <span class="callLabel">${t('friendRequest.label')}</span>
-          <span class="callName">${escapeHtml(name || t('unknown'))}</span>
-        </span>
-      </span>
-      <span class="actions">
-        <button class="acceptBtn">${t('accept')}</button>
-        <button class="declineBtn">${t('decline')}</button>
-      </span>`;
-    div.querySelector('.acceptBtn').addEventListener('click', () => {
-      pendingFriendRequests.delete(id);
-      learnName(id, name);
-      addFriend(id);
-      dataConnections.get(id)?.send({ type: 'friend-accept' });
-      toast(t('toast.addedFriend', { name: name || t('them') }), 'info');
-      renderFriendRequests();
-    });
-    div.querySelector('.declineBtn').addEventListener('click', () => {
-      pendingFriendRequests.delete(id);
-      dataConnections.get(id)?.send({ type: 'friend-decline' });
-      renderFriendRequests();
-    });
-    friendRequestsEl.appendChild(div);
-  }
 }
 
 // --- screen sharing --------------------------------------------------
@@ -1921,8 +2086,7 @@ async function startScreenShare() {
     call.on('error', () => outgoingScreenCalls.delete(id));
   }
 
-  shareScreenBtn.title = t('main.stopSharing');
-  shareScreenBtn.classList.add('sharing');
+  renderShareButtons();
   playScreenShareSound(true);
   log(t('log.sharingScreen'));
 }
@@ -1934,8 +2098,7 @@ function stopScreenShare() {
   }
   for (const call of outgoingScreenCalls.values()) call.close();
   outgoingScreenCalls.clear();
-  shareScreenBtn.title = t('main.shareScreen');
-  shareScreenBtn.classList.remove('sharing');
+  renderShareButtons();
   playScreenShareSound(false);
   log(t('log.stoppedSharing'));
 }
@@ -2294,7 +2457,7 @@ async function requestMic() {
     micAccessFailed = true;
     myIdEl.textContent = t('myId.micNeeded');
     myIdEl.removeAttribute('data-i18n'); // same reasoning as the peer.on('open') case above
-    renderCallPanel(); // swaps the main panel's empty state over to explaining the mic problem
+    renderPeerList(); // shows the notice bar explaining the mic problem
     return false;
   }
   rnnoiseEnabled = getNoiseSuppressionEnabled();
@@ -2375,7 +2538,7 @@ async function main() {
     scheduleReconnect();
   });
 
-  callBtn.addEventListener('click', () => {
+  sendRequestBtn.addEventListener('click', () => {
     const id = peerIdInput.value.trim();
     if (!id) { peerIdInput.focus(); return; }
     if (id === peer.id) { toast(t('toast.ownId'), 'info'); return; }
@@ -2386,6 +2549,7 @@ async function main() {
     if (existing && existing.status !== 'pending') {
       toast(t('toast.alreadyFriend', { name: nameFor(existing) }), 'info');
       peerIdInput.value = '';
+      sendRequestBtn.disabled = true;
       return;
     }
     // Re-adding someone still pending just sends the request again — the way to
@@ -2393,12 +2557,13 @@ async function main() {
     addFriend(id, 'pending');
     sendFriendRequest(id);
     peerIdInput.value = '';
+    sendRequestBtn.disabled = true;
     toast(t('toast.requestSent'), 'info');
     log(t('log.friendRequestSent', { name: friendName(id) }));
   });
 
   peerIdInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') callBtn.click();
+    if (e.key === 'Enter') sendRequestBtn.click();
   });
 }
 
@@ -2413,6 +2578,14 @@ function copyMyId(btn, label) {
 
 copyBtn.addEventListener('click', () => copyMyId(copyBtn, () => t('settings.copy')));
 myIdEl.addEventListener('click', () => copyMyId(copyBtn, () => t('settings.copy')));
+// Like Discord, clicking yourself in the bottom-left corner copies who you are.
+userInfoEl.addEventListener('click', () => {
+  if (!peer) return;
+  copyMyId(myTagEl, myTagText);
+  myTagEl.hidden = false;
+  myActivityEl.hidden = true;
+  setTimeout(renderMyActivity, 1200);
+});
 
 settingsBtn.addEventListener('click', () => {
   settingsNameInput.value = getMyUsername();
@@ -2529,42 +2702,66 @@ function applyLanguage() {
   if (justUpdatedInfo) {
     whatsNewTextEl.textContent = t('whatsNew.title', { version: justUpdatedInfo.version });
   }
-  muteBtn.title = muted ? t('main.unmute') : t('main.mute');
-  shareScreenBtn.title = screenStream ? t('main.stopSharing') : t('main.shareScreen');
-  if (openChatPeerId === null && calls.size > 0) chatMessagesEl.dataset.empty = t('chat.emptyCall');
-  else chatMessagesEl.dataset.empty = t('chat.emptyDm');
-  emptyStateVariant = null; // force renderEmptyState (via renderPeerList below) to rebuild in the new language
+  renderMuteButtons();
+  renderShareButtons();
+  if (currentView === 'dm') enterDm(openChatPeerId);
+  else if (currentView === 'call') showCallChat();
+  friendsEmptyKind = null; // force renderFriendsEmpty (via renderPeerList below) to rebuild in the new language
+  welcomeStepsEl.innerHTML = ''; // same for the Add Friend tab's steps
   syncTraySettings(); // relabels the tray menu
   renderMyActivity();
   renderPeerList();
   renderIncomingCalls();
-  renderFriendRequests();
 }
 
 chatSendBtn.addEventListener('click', sendChatMessage);
 chatInputEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') sendChatMessage();
 });
-chatCloseBtn.addEventListener('click', closeChat);
 
-muteBtn.addEventListener('click', () => {
-  muted = !muted;
-  applyTransmitState(); // startMic applies it too, if the mic isn't open yet
-  muteBtn.title = muted ? t('main.unmute') : t('main.mute');
-  muteBtn.classList.toggle('active', muted);
-  muteBtn.innerHTML = muted ? ICONS.micOff : ICONS.mic;
-  playMuteSound(muted);
-  renderCallPanel(); // our own participant tile shows the muted badge
-});
+// The call view and the sidebar's bottom corner each have their own mute,
+// share-screen and leave buttons — both sets do the same thing.
+for (const btn of [muteBtn, panelMuteBtn]) {
+  btn.addEventListener('click', () => {
+    muted = !muted;
+    applyTransmitState(); // startMic applies it too, if the mic isn't open yet
+    renderMuteButtons();
+    playMuteSound(muted);
+    renderCallPanel(); // our own tile shows the muted badge
+  });
+}
 
-leaveCallBtn.addEventListener('click', () => {
-  for (const id of [...calls.keys()]) hangUp(id);
-});
+for (const btn of [leaveCallBtn, panelLeaveBtn]) {
+  btn.addEventListener('click', () => {
+    for (const id of [...calls.keys()]) hangUp(id);
+  });
+}
 
-shareScreenBtn.addEventListener('click', () => {
-  if (screenStream) stopScreenShare();
-  else toggleScreenSharePopover(shareScreenBtn);
+for (const btn of [shareScreenBtn, panelShareBtn]) {
+  btn.addEventListener('click', () => {
+    if (screenStream) stopScreenShare();
+    else toggleScreenSharePopover(btn);
+  });
+}
+
+homeBtn.addEventListener('click', () => showFriends());
+friendsNavBtn.addEventListener('click', () => showFriends());
+railAddBtn.addEventListener('click', () => showFriends('add'));
+dmAddBtn.addEventListener('click', () => showFriends('add'));
+for (const btn of friendsTabBtns) btn.addEventListener('click', () => showFriends(btn.dataset.tab));
+voiceInfoEl.addEventListener('click', showCallView);
+dmCallBtn.addEventListener('click', () => {
+  if (calls.has(openChatPeerId)) showCallView();
+  else connectTo(openChatPeerId);
 });
+callChatToggleBtn.addEventListener('click', () => {
+  callChatOpen = !callChatOpen;
+  renderView();
+  if (callChatOpen) chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+});
+dmSearchEl.addEventListener('input', () => { dmFilter = dmSearchEl.value; renderPeerList(); });
+friendsSearchEl.addEventListener('input', () => { friendsFilter = friendsSearchEl.value; renderPeerList(); });
+peerIdInput.addEventListener('input', () => { sendRequestBtn.disabled = !peerIdInput.value.trim(); });
 
 logToggleBtn.addEventListener('click', () => {
   logPanel.hidden = !logPanel.hidden;
@@ -2577,11 +2774,25 @@ usernameInput.addEventListener('input', () => {
   usernameAvatar.style.background = colorForId(usernameInput.value || getMyPersistentId());
 });
 
-muteBtn.innerHTML = ICONS.mic;
+renderMuteButtons();
+renderShareButtons();
 shareScreenBtn.innerHTML = ICONS.monitor;
+panelShareBtn.innerHTML = ICONS.monitor;
 leaveCallBtn.innerHTML = ICONS.phoneOff;
+panelLeaveBtn.innerHTML = ICONS.phoneOff;
 logToggleBtn.innerHTML = ICONS.list;
 settingsBtn.innerHTML = ICONS.gear;
+railAddBtn.innerHTML = ICONS.plus;
+dmAddBtn.innerHTML = ICONS.plus;
+friendsNavBtn.querySelector('.navIcon').innerHTML = ICONS.users;
+document.getElementById('friendsHeaderIcon').innerHTML = ICONS.users;
+document.getElementById('dmHeaderIcon').innerHTML = ICONS.at;
+document.getElementById('callHeaderIcon').innerHTML = ICONS.volumeHigh;
+document.getElementById('chatPaneIcon').innerHTML = ICONS.chat;
+voiceStatusIconEl.innerHTML = ICONS.signal;
+dmCallBtn.innerHTML = ICONS.phone;
+callChatToggleBtn.innerHTML = ICONS.chat;
+chatSendBtn.innerHTML = ICONS.send;
 
 // --- release notes popup ------------------------------------------------
 // Shared by the "update available" banner and the post-update "what's new"
@@ -2693,6 +2904,7 @@ async function init() {
   renderUnreadTitle();
   if (getMyUsername()) setMyUsername(getMyUsername());
   saveFriends(loadFriends()); // persist the cleanup of any bad entries from past bugs
+  if (!acceptedFriends().length) friendsTab = 'add'; // nobody to list yet — start where you add someone
   renderPeerList();
   showWhatsNewIfJustUpdated();
 

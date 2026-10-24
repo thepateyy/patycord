@@ -62,18 +62,31 @@ async function reopen(app) {
 }
 
 async function befriend(a, b) {
+  await showFriendsTab(a, 'add');
   await a.page.fill('#peerIdInput', b.id);
-  await a.page.click('#callBtn');
-  const request = b.page.locator('#friendRequests .incomingCall');
-  await expect(request).toContainText(a.name);
+  await a.page.click('#sendRequestBtn');
+  await showFriendsTab(b, 'pending');
+  const request = b.page.locator('#pendingList li.incoming', { hasText: a.name });
   await request.locator('.acceptBtn').click();
-  await expect(a.page.locator('#pendingCard')).toBeHidden();
-  await expect(friendRow(a, b)).toContainText('Online');
-  await expect(friendRow(b, a)).toContainText('Online');
+  await expect(a.page.locator('#pendingList li', { hasText: b.name })).toHaveCount(0);
+  await expect(dmRow(a, b)).toContainText('Online');
+  await expect(dmRow(b, a)).toContainText('Online');
 }
 
-function friendRow(viewer, friend) {
+async function showFriendsTab(app, tab) {
+  await app.page.click('#friendsNavBtn');
+  await app.page.click(`.friendsTab[data-tab="${tab}"]`);
+}
+
+// Their row on the Friends page, where the call and message buttons are.
+async function friendRow(viewer, friend) {
+  await showFriendsTab(viewer, 'all');
   return viewer.page.locator('#peerList li', { hasText: friend.name });
+}
+
+// Their conversation in the sidebar — always on screen, with their status and unread count.
+function dmRow(viewer, friend) {
+  return viewer.page.locator('#dmList li', { hasText: friend.name });
 }
 
 // Total audio energy received so far, over every live peer connection.
@@ -109,7 +122,7 @@ test('two friends: add by ID, call, hear each other, mute, call chat, hang up', 
 
   await befriend(alice, bob);
 
-  await friendRow(alice, bob).locator('.callToggleBtn').click();
+  await (await friendRow(alice, bob)).locator('.callToggleBtn').click();
   await bob.page.locator('#incomingCalls .acceptBtn').click();
   await expect(alice.page.locator('#callTitle')).toHaveText('In call (2)');
   await expect(bob.page.locator('#callTitle')).toHaveText('In call (2)');
@@ -142,9 +155,9 @@ test('a message to an offline friend is delivered once they come back', async ({
   const bob = await openApp(browser, 'Bob');
   await befriend(alice, bob);
 
-  await friendRow(alice, bob).locator('.chatToggleBtn').click();
+  await (await friendRow(alice, bob)).locator('.chatToggleBtn').click();
   await bob.page.close();
-  await expect(friendRow(alice, bob)).toContainText('Offline', { timeout: 30_000 });
+  await expect(dmRow(alice, bob)).toContainText('Offline', { timeout: 30_000 });
 
   await alice.page.fill('#chatInput', 'see this when you are back');
   await alice.page.press('#chatInput', 'Enter');
@@ -153,7 +166,7 @@ test('a message to an offline friend is delivered once they come back', async ({
 
   await reopen(bob);
   await expect(sent).not.toHaveClass(/pending/, { timeout: 30_000 }); // Bob confirmed it
-  await expect(friendRow(bob, alice).locator('.unreadBadge')).toHaveText('1');
+  await expect(dmRow(bob, alice).locator('.unreadBadge')).toHaveText('1');
   const copies = await bob.page.evaluate(() => Object.values(JSON.parse(localStorage.getItem('patycord.chatHistories')))
     .flat().filter((m) => m.text === 'see this when you are back').length);
   expect(copies).toBe(1);
