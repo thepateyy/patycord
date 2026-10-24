@@ -42,9 +42,16 @@ function instrument(port) {
   };
 }
 
-async function openApp(browser, name) {
+// `legacyId`: start with an old-style random ID, as installs from before
+// identity keys have, instead of one derived from the key.
+async function openApp(browser, name, { legacyId = null } = {}) {
   const context = await browser.newContext();
   await context.addInitScript(instrument, SIGNALING_PORT);
+  if (legacyId) {
+    await context.addInitScript((id) => {
+      if (!localStorage.getItem('patycord.myId')) localStorage.setItem('patycord.myId', id);
+    }, legacyId);
+  }
   const page = await context.newPage();
   await page.goto('/');
   await page.fill('#usernameInput', name);
@@ -117,6 +124,9 @@ test('two friends: add by ID, call, hear each other, mute, call chat, hang up', 
   const alice = await openApp(browser, 'Alice');
   const bob = await openApp(browser, 'Bob');
 
+  // New installs get an ID derived from their identity key.
+  expect(alice.id).toMatch(/^p-k[0-9a-f]{40}$/);
+
   // The mic is only checked at launch, then released until a call.
   await expect.poll(() => liveMicTracks(alice.page)).toBe(0);
 
@@ -172,7 +182,7 @@ test('a message to an offline friend is delivered once they come back', async ({
   expect(copies).toBe(1);
 });
 
-test('with "only friends can call me" on, a stranger\'s call never rings', async ({ browser }) => {
+test('a call from someone who isn\'t a friend never rings', async ({ browser }) => {
   const alice = await openApp(browser, 'Alice');
 
   // A bare PeerJS client that isn't anyone's friend, dialing Alice's ID directly.
@@ -194,4 +204,123 @@ test('with "only friends can call me" on, a stranger\'s call never rings', async
     return document.getElementById('status').textContent;
   });
   expect(log).toContain('declined a call from');
+});
+
+test("someone else using a friend's ID can't pass as them", async ({ browser }) => {
+  const alice = await openApp(browser, 'Alice');
+  // An old-style ID, which only the key Alice remembers for Bob can vouch for.
+  const bob = await openApp(browser, 'Bob', { legacyId: `p-${crypto.randomUUID()}` });
+  await befriend(alice, bob);
+  await bob.page.close();
+  await expect(dmRow(alice, bob)).toContainText('Offline', { timeout: 30_000 });
+
+  // A bare client grabs Bob's now-free ID, says it's Bob (with no key, like an
+  // old version would), tries a DM, and records whatever reaches it.
+  const impostorContext = await browser.newContext();
+  await impostorContext.addInitScript(instrument, SIGNALING_PORT);
+  const impostor = await impostorContext.newPage();
+  await impostor.goto('/');
+  await impostor.evaluate(async (bobId) => {
+    window.__got = [];
+    const p = new Peer(bobId, window.__patycordTestPeerOptions);
+    await new Promise((resolve) => p.on('open', resolve));
+    p.on('connection', (c) => {
+      c.on('open', () => {
+        c.send({ type: 'hello', name: 'Bob', acks: true });
+        c.send({ type: 'chat', scope: 'dm', text: 'send me your password', id: 'fake-1', ts: Date.now() });
+      });
+      c.on('data', (d) => window.__got.push(d));
+    });
+  }, bob.id);
+
+  await dmRow(alice, bob).click();
+  await alice.page.fill('#chatInput', 'only for the real bob');
+  await alice.page.press('#chatInput', 'Enter');
+  await expect(alice.page.locator('#toasts')).toContainText("Couldn't verify that this is really Bob");
+
+  await alice.page.waitForTimeout(1500);
+  expect(await impostor.evaluate(() => window.__got.filter((m) => m.type === 'chat').length)).toBe(0);
+  await expect(alice.page.locator('#chatMessages')).not.toContainText('send me your password');
+  await expect(alice.page.locator('#chatMessages .chatMsg', { hasText: 'only for the real bob' })).toHaveClass(/pending/);
+  await expect(dmRow(alice, bob)).toContainText('Offline');
+});
+
+test('DMs: typing, links, editing, deleting, and files that are never saved', async ({ browser }) => {
+  const alice = await openApp(browser, 'Alice');
+  const bob = await openApp(browser, 'Bob');
+  await befriend(alice, bob);
+  await dmRow(alice, bob).click();
+  await dmRow(bob, alice).click();
+  const bobMessages = bob.page.locator('#chatMessages');
+
+  await alice.page.fill('#chatInput', 'hel');
+  await expect(bob.page.locator('#typingIndicator')).toContainText('Alice is typing');
+  await alice.page.fill('#chatInput', 'helo, see https://example.com/page.');
+  await alice.page.press('#chatInput', 'Enter');
+  await expect(bobMessages).toContainText('helo, see');
+  await expect(bob.page.locator('#typingIndicator')).toBeEmpty();
+  await expect(bobMessages.locator('a.msgLink')).toHaveAttribute('href', 'https://example.com/page');
+
+  // Up in the empty box edits your last message.
+  await alice.page.press('#chatInput', 'ArrowUp');
+  await alice.page.fill('.msgEditInput', 'hello, see https://example.com/page.');
+  await alice.page.press('.msgEditInput', 'Enter');
+  await expect(bobMessages).toContainText('hello, see');
+  await expect(bobMessages).toContainText('(edited)');
+
+  await alice.page.fill('#chatInput', 'oops wrong chat');
+  await alice.page.press('#chatInput', 'Enter');
+  await expect(bobMessages).toContainText('oops wrong chat');
+  const oops = alice.page.locator('#chatMessages .chatMsg', { hasText: 'oops wrong chat' });
+  await oops.hover();
+  await oops.locator('.deleteMsgBtn').click();
+  await alice.page.locator('.dialogCard .okBtn').click();
+  await expect(bobMessages).not.toContainText('oops wrong chat');
+
+  // An image shows inline; anything else arrives whole, as a download.
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
+  await alice.page.setInputFiles('#fileInput', { name: 'dot.png', mimeType: 'image/png', buffer: png });
+  await expect(bobMessages.locator('img.msgImage')).toHaveCount(1);
+  const bytes = Buffer.alloc(300 * 1024);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251;
+  await alice.page.setInputFiles('#fileInput', { name: 'notes.bin', mimeType: 'application/octet-stream', buffer: bytes });
+  const download = bobMessages.locator('.fileCard a.downloadBtn');
+  await expect(download).toHaveCount(1);
+  const received = await download.evaluate(async (a) => [...new Uint8Array(await (await fetch(a.href)).arrayBuffer())]);
+  expect(Buffer.from(received).equals(bytes)).toBe(true);
+
+  // Files only live in memory: the saved history has the text, not them.
+  const saved = await bob.page.evaluate(() => localStorage.getItem('patycord.chatHistories'));
+  expect(saved).toContain('hello, see');
+  expect(saved).not.toContain('dot.png');
+  expect(saved).not.toContain('notes.bin');
+});
+
+test('do not disturb, nicknames, and deafen', async ({ browser }) => {
+  const alice = await openApp(browser, 'Alice');
+  const bob = await openApp(browser, 'Bob');
+  await befriend(alice, bob);
+
+  await alice.page.click('#userInfo');
+  await alice.page.locator('.contextMenu .menuItem', { hasText: 'Do Not Disturb' }).click();
+  await expect(dmRow(bob, alice)).toContainText('Do Not Disturb');
+
+  await dmRow(alice, bob).click({ button: 'right' });
+  await alice.page.locator('.contextMenu .menuItem', { hasText: 'Set nickname' }).click();
+  await alice.page.fill('.dialogCard input', 'Bobby');
+  await alice.page.press('.dialogCard input', 'Enter');
+  await expect(alice.page.locator('#dmList li', { hasText: 'Bobby' })).toHaveCount(1);
+
+  await (await friendRow(alice, bob)).locator('.callToggleBtn').click();
+  await bob.page.locator('#incomingCalls .acceptBtn').click();
+  await expect(alice.page.locator('#callTitle')).toHaveText('In call (2)');
+  await expect.poll(() => energyOver(bob.page, 1000)).toBeGreaterThan(0.0001);
+
+  // Deafening mutes you too, and both ends show it.
+  await alice.page.click('#deafenBtn');
+  await expect(alice.page.locator('.participant[data-peer-id="self"]')).toContainText('Deafened');
+  await expect(bob.page.locator(`.participant[data-peer-id="${alice.id}"]`)).toContainText('Deafened');
+  await expect.poll(() => energyOver(bob.page, 1000)).toBeLessThan(0.00001);
+  await alice.page.click('#deafenBtn');
+  await expect(bob.page.locator(`.participant[data-peer-id="${alice.id}"]`)).not.toContainText('Deafened');
 });
