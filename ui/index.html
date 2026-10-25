@@ -709,6 +709,18 @@
   .participant .volumeBtn svg { width: 15px; height: 15px; }
   .participant .volumeBtn:hover { background: rgba(0,0,0,0.75); }
   .participant:hover .volumeBtn, .participant .volumeBtn:focus-visible { opacity: 1; }
+  .participant .quality {
+    position: absolute; top: 8px; left: 8px; display: flex; align-items: flex-end; gap: 2px;
+    padding: 5px 6px; border-radius: 6px; background: rgba(0,0,0,0.45);
+  }
+  .participant .quality:empty { display: none; }
+  .quality i { width: 3px; border-radius: 1px; background: rgba(255,255,255,0.25); }
+  .quality i:nth-child(1) { height: 5px; }
+  .quality i:nth-child(2) { height: 8px; }
+  .quality i:nth-child(3) { height: 11px; }
+  .quality.q3 i { background: var(--success); }
+  .quality.q2 i:nth-child(-n+2) { background: var(--warning); }
+  .quality.q1 i:nth-child(1) { background: var(--danger); }
   .callControls { flex-shrink: 0; display: flex; justify-content: center; gap: 14px; padding: 10px 16px 18px; }
   .dockBtn { width: 52px; height: 52px; border-radius: 50%; background: #1b2442; color: var(--text); }
   .dockBtn svg { width: 21px; height: 21px; }

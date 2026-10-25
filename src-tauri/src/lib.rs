@@ -339,14 +339,65 @@ mod secure_store {
         load_from(&store_path(&app)?, &backup_path(&app)?)
     }
 
+    // Saves are coalesced: the frontend hands over the whole store on every chat
+    // message, delivery confirmation and friend change, and encrypting it plus the
+    // rename dance each time is wasted work when the next save is usually a moment
+    // behind. The latest copy waits in PENDING and a writer thread puts it on disk
+    // SAVE_DELAY after the first change; on exit, whatever's still waiting is
+    // written before the process goes (flush_pending, from RunEvent::Exit). A
+    // write that fails is reported by the next save call, so the frontend's
+    // warning still shows up.
+    const SAVE_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+
+    struct Pending {
+        data: Option<String>,
+        paths: Option<(PathBuf, PathBuf, PathBuf)>, // main, backup, temp
+        error: Option<String>,
+    }
+
+    static PENDING: std::sync::Mutex<Pending> = std::sync::Mutex::new(Pending { data: None, paths: None, error: None });
+    // Held from taking a copy out of PENDING until it's on disk, so an older copy
+    // can never land after a newer one (the writer thread vs. the flush on exit).
+    static FLUSH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static WRITER: std::sync::OnceLock<std::thread::Thread> = std::sync::OnceLock::new();
+
+    pub fn flush_pending() {
+        let Ok(_flush) = FLUSH_LOCK.lock() else { return };
+        let (data, paths) = {
+            let Ok(mut pending) = PENDING.lock() else { return };
+            (pending.data.take(), pending.paths.clone())
+        };
+        let (Some(data), Some((main, backup, temp))) = (data, paths) else { return };
+        if let Err(err) = save_to(&main, &backup, &temp, &data) {
+            if let Ok(mut pending) = PENDING.lock() {
+                pending.error = Some(err);
+                // Keep it for the next attempt, unless a newer copy has come in since.
+                pending.data.get_or_insert(data);
+            }
+        }
+    }
+
     #[tauri::command]
     pub fn save_secure_store(app: tauri::AppHandle, data: String) -> Result<(), String> {
-        save_to(
-            &store_path(&app)?,
-            &backup_path(&app)?,
-            &temp_path(&app)?,
-            &data,
-        )
+        let paths = (store_path(&app)?, backup_path(&app)?, temp_path(&app)?);
+        let error = {
+            let mut pending = PENDING.lock().map_err(|e| e.to_string())?;
+            pending.data = Some(data);
+            pending.paths = Some(paths);
+            pending.error.take()
+        };
+        WRITER
+            .get_or_init(|| {
+                std::thread::spawn(|| loop {
+                    std::thread::park(); // until a save comes in
+                    std::thread::sleep(SAVE_DELAY); // gathering any that follow it
+                    flush_pending();
+                })
+                .thread()
+                .clone()
+            })
+            .unpark();
+        error.map_or(Ok(()), Err)
     }
 
     #[cfg(test)]
@@ -432,6 +483,20 @@ mod secure_store {
         }
 
         #[test]
+        fn a_waiting_save_is_written_by_flush() {
+            let p = Paths::new("flush");
+            p.save(r#"{"gen":1}"#).unwrap();
+            {
+                let mut pending = PENDING.lock().unwrap();
+                pending.data = Some(r#"{"gen":2}"#.to_string());
+                pending.paths = Some((p.main.clone(), p.backup.clone(), p.temp.clone()));
+            }
+            flush_pending(); // what exit does with a save still waiting out its delay
+            assert_eq!(p.load().unwrap(), r#"{"gen":2}"#);
+            assert!(PENDING.lock().unwrap().data.is_none());
+        }
+
+        #[test]
         fn concurrent_saves_leave_a_readable_store() {
             let p = Paths::new("concurrent");
             p.save(r#"{"gen":0}"#).unwrap();
@@ -467,6 +532,8 @@ mod secure_store {
     pub fn save_secure_store(_app: tauri::AppHandle, _data: String) -> Result<(), String> {
         Ok(())
     }
+
+    pub fn flush_pending() {}
 }
 
 // --- tray --------------------------------------------------------------
@@ -698,6 +765,11 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running patycord");
+        .build(tauri::generate_context!())
+        .expect("error while running patycord")
+        .run(|_app, event| {
+            if let tauri::RunEvent::Exit = event {
+                secure_store::flush_pending(); // a save still waiting out its delay
+            }
+        });
 }

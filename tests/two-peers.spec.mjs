@@ -160,6 +160,66 @@ test('two friends: add by ID, call, hear each other, mute, call chat, hang up', 
   await expect.poll(() => liveMicTracks(bob.page)).toBe(0);
 });
 
+test('calls ask for FEC and DTX, and show connection quality', async ({ browser }) => {
+  const alice = await openApp(browser, 'Alice');
+  const bob = await openApp(browser, 'Bob');
+  await befriend(alice, bob);
+
+  await (await friendRow(alice, bob)).locator('.callToggleBtn').click();
+  await bob.page.locator('#incomingCalls .acceptBtn').click();
+  await expect(alice.page.locator('#callTitle')).toHaveText('In call (2)');
+
+  // On the same machine it's a direct, near-instant connection: full bars.
+  const bars = alice.page.locator(`.participant[data-peer-id="${bob.id}"] .quality`);
+  await expect(bars).toHaveClass(/q3/, { timeout: 10_000 });
+  await expect(bars).toHaveAttribute('title', /direct connection/);
+
+  // Both halves of the negotiation: Alice's offer and Bob's answer.
+  const opusParams = (page) => page.evaluate(() => window.__pcs
+    .filter((pc) => pc.connectionState !== 'closed' && /m=audio/.test(pc.localDescription?.sdp || ''))
+    .map((pc) => /a=fmtp:\d+ (.*useinbandfec.*)/.exec(pc.localDescription.sdp)?.[1] || ''));
+  for (const app of [alice, bob]) {
+    const params = await opusParams(app.page);
+    expect(params.length).toBeGreaterThan(0);
+    for (const p of params) expect(p).toMatch(/usedtx=1/);
+  }
+});
+
+test('friends who are online stay on one connection instead of re-dialing every sweep', async ({ browser }) => {
+  const alice = await openApp(browser, 'Alice');
+  const bob = await openApp(browser, 'Bob');
+  await befriend(alice, bob);
+  const pcCount = (app) => app.page.evaluate(() => window.__pcs.length);
+  const before = [await pcCount(alice), await pcCount(bob)];
+  await alice.page.waitForTimeout(12_000); // past a presence sweep (10 s)
+  expect([await pcCount(alice), await pcCount(bob)]).toEqual(before);
+  await expect(dmRow(alice, bob)).toContainText('Online');
+  await expect(dmRow(bob, alice)).toContainText('Online');
+
+  // Quitting still shows up as offline promptly.
+  await bob.page.close();
+  await expect(dmRow(alice, bob)).toContainText('Offline', { timeout: 15_000 });
+});
+
+test("joining a call through a friend who's in it: everyone ends up connected", async ({ browser }) => {
+  const alice = await openApp(browser, 'Alice');
+  const bob = await openApp(browser, 'Bob');
+  const carol = await openApp(browser, 'Carol');
+  await befriend(alice, bob);
+  await befriend(carol, bob); // Carol and Alice aren't friends
+
+  await (await friendRow(alice, bob)).locator('.callToggleBtn').click();
+  await bob.page.locator('#incomingCalls .acceptBtn').click();
+  await expect(alice.page.locator('#callTitle')).toHaveText('In call (2)');
+
+  // Carol calls Bob; Bob picks up and introduces her to Alice, whose phone rings
+  // even though they aren't friends.
+  await (await friendRow(carol, bob)).locator('.callToggleBtn').click();
+  await bob.page.locator('#incomingCalls .acceptBtn').click();
+  await alice.page.locator('#incomingCalls .acceptBtn').click();
+  for (const app of [alice, bob, carol]) await expect(app.page.locator('#callTitle')).toHaveText('In call (3)');
+});
+
 test('a message to an offline friend is delivered once they come back', async ({ browser }) => {
   const alice = await openApp(browser, 'Alice');
   const bob = await openApp(browser, 'Bob');

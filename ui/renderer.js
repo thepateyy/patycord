@@ -1140,12 +1140,12 @@ function syncCallState() {
   if (inCall === wasInCall) return;
   wasInCall = inCall;
   if (inCall) {
-    startMic(); startSpeakingWatch(); syncPushToTalk();
+    startMic(); startSpeakingWatch(); startQualityWatch(); syncPushToTalk();
     viewBeforeCall = currentView === 'dm' ? openChatPeerId : null;
     enterCallView();
     return;
   }
-  stopMic(); stopSpeakingWatch(); syncPushToTalk();
+  stopMic(); stopSpeakingWatch(); stopQualityWatch(); syncPushToTalk();
   if (screenStream) stopScreenShare(); // no one left to send it to
   callChatHistory = []; // call chat ends with the call, like it always has
   if (currentView === 'call') {
@@ -1199,7 +1199,7 @@ function renderCallPanel() {
           : voiceStateByPeer.get(id)?.deafened ? `<span class="sub">${t('main.deafened')}</span>`
           : voiceStateByPeer.get(id)?.muted ? `<span class="sub">${t('main.muted')}</span>` : ''}
       </span>
-      ${entry.audioEl ? `<button class="volumeBtn" title="${t('main.volume')}"></button>` : ''}`;
+      ${entry.audioEl ? `${qualityHtml(id)}<button class="volumeBtn" title="${t('main.volume')}"></button>` : ''}`;
     if (entry.audioEl) {
       const volumeBtn = div.querySelector('.volumeBtn');
       updateVolumeIcon(volumeBtn, entry.audioEl.volume);
@@ -1320,6 +1320,71 @@ function stopSpeakingWatch() {
   speakingWatchTimer = null;
   speakingNow.clear();
   lastHeardAt.clear();
+}
+
+// --- connection quality ---------------------------------------------------
+// Signal bars on each participant's tile, from WebRTC's own stats: round-trip
+// time, how much of their audio is getting lost, and whether the call had to go
+// through a relay server instead of straight between you. Read every two
+// seconds while in a call and on screen.
+
+const QUALITY_POLL_MS = 2000;
+const qualityByPeer = new Map(); // peerId -> { level, rtt, loss, relay }
+const lastAudioCounts = new Map(); // peerId -> { received, lost }, for loss since the last read
+let qualityTimer = null;
+
+function startQualityWatch() {
+  if (qualityTimer) return;
+  qualityTimer = setInterval(() => {
+    if (document.hidden) return;
+    for (const [id, entry] of calls) {
+      if (entry.audioEl) readQuality(id, entry.call?.peerConnection);
+    }
+  }, QUALITY_POLL_MS);
+}
+
+function stopQualityWatch() {
+  clearInterval(qualityTimer);
+  qualityTimer = null;
+  qualityByPeer.clear();
+  lastAudioCounts.clear();
+}
+
+async function readQuality(id, pc) {
+  if (!pc || pc.connectionState === 'closed') return;
+  let stats;
+  try { stats = await pc.getStats(); } catch { return; }
+  let pair = null;
+  let received = 0;
+  let lost = 0;
+  stats.forEach((s) => {
+    if (s.type === 'transport' && s.selectedCandidatePairId) pair = stats.get(s.selectedCandidatePairId);
+    if (s.type === 'inbound-rtp' && s.kind === 'audio') { received += s.packetsReceived || 0; lost += s.packetsLost || 0; }
+  });
+  if (!pair) stats.forEach((s) => { if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') pair = s; });
+  if (!pair || !calls.has(id)) return;
+  const rtt = Math.round((pair.currentRoundTripTime || 0) * 1000);
+  const relay = [stats.get(pair.localCandidateId), stats.get(pair.remoteCandidateId)].some((c) => c?.candidateType === 'relay');
+  const prev = lastAudioCounts.get(id);
+  lastAudioCounts.set(id, { received, lost });
+  const newReceived = prev ? received - prev.received : 0;
+  const newLost = prev ? Math.max(0, lost - prev.lost) : 0;
+  const loss = newReceived + newLost > 0 ? (newLost / (newReceived + newLost)) * 100 : 0;
+  const level = rtt > 400 || loss > 8 ? 1 : rtt > 200 || loss > 3 ? 2 : 3;
+  qualityByPeer.set(id, { level, rtt, loss, relay });
+  const el = callParticipantsEl.querySelector(`.participant[data-peer-id="${CSS.escape(id)}"] .quality`);
+  if (el) el.outerHTML = qualityHtml(id);
+}
+
+function qualityHtml(id) {
+  const q = qualityByPeer.get(id);
+  if (!q) return '<span class="quality"></span>';
+  const title = t('quality.tooltip', {
+    rtt: q.rtt,
+    loss: q.loss.toFixed(q.loss < 1 ? 1 : 0),
+    route: q.relay ? t('quality.relayed') : t('quality.direct'),
+  });
+  return `<span class="quality q${q.level}" title="${escapeAttr(title)}"><i></i><i></i><i></i></span>`;
 }
 
 // --- per-participant volume popover -------------------------------
@@ -1486,6 +1551,8 @@ function removeCall(peerId) {
   entry?.analyserSource?.disconnect();
   speakingAnalysers.delete(peerId);
   speakingNow.delete(peerId);
+  qualityByPeer.delete(peerId);
+  lastAudioCounts.delete(peerId);
   voiceStateByPeer.delete(peerId);
   calls.delete(peerId);
   updateOutgoingRingState();
@@ -1517,16 +1584,48 @@ function removeDataConnection(id, conn) {
   if (dataConnections.get(id) === conn) dataConnections.delete(id);
 }
 
-// Opens (if needed) the data connection used for roster exchange and chat with `id`.
+// Our connection to a friend closed: usually they quit, but it may just be this
+// connection that broke. On screen, redial right away and let that decide
+// (probePresence); in the tray, call them offline until we're looked at again.
+function connectionClosed(id, conn) {
+  const wasCurrent = dataConnections.get(id) === conn;
+  removeDataConnection(id, conn);
+  if (!wasCurrent || !isTrusted(conn) || !isFriend(id) || calls.has(id)) return;
+  if (document.hidden) markOffline(id);
+  else setTimeout(() => probePresence(id), 500);
+}
+
+// How long dialing someone may take before they count as unreachable. PeerJS
+// reports an offline peer as a 'peer-unavailable' error (dropDeadConnectionsTo),
+// but not always — if that never comes, this is what gives up.
+const CONNECT_TIMEOUT_MS = 8000;
+
+// Opens (if needed) the data connection used for chat, presence and calls with `id`.
 function ensureDataConnection(id) {
   if (dataConnections.has(id)) return dataConnections.get(id);
   const conn = peer.connect(id);
   wireIdentityCheck(conn, id); // queued DMs go out once it passes — see settleIdentity
   conn.on('open', () => conn.send(myHello(conn)));
   conn.on('error', () => {}); // connectivity errors surface via the call itself
-  conn.on('close', () => removeDataConnection(id, conn));
+  conn.on('close', () => connectionClosed(id, conn));
   dataConnections.set(id, conn);
+  setTimeout(() => {
+    if (conn.open || dataConnections.get(id) !== conn) return;
+    conn.close();
+    dataConnections.delete(id);
+    markOffline(id);
+  }, CONNECT_TIMEOUT_MS);
   return conn;
+}
+
+// Picking up a call while already in one with others: hand the newcomer the list
+// of who else is here, so they can call each of them directly, and vouch for
+// them to everyone else (see admitIncomingCall).
+function introduceToCall(id) {
+  const others = [...calls.keys()].filter((other) => other !== id);
+  if (!others.length) return;
+  trustedConn(id)?.send({ type: 'roster', peers: others });
+  for (const other of others) trustedConn(other)?.send({ type: 'peer-joined', id });
 }
 
 // Tells `id` "I added you" so they get an Accept prompt instead of having to
@@ -1540,12 +1639,30 @@ function sendFriendRequest(id) {
   else conn.on('open', send);
 }
 
+// Opus settings we ask the other end to send our way, written into our half of
+// the SDP (the offer when we call, the answer when we pick up): in-band forward
+// error correction, so a lost packet is rebuilt from the next one instead of
+// becoming a glitch, and DTX, which sends next to nothing while you're silent
+// (Chromium leaves it off). Someone on an older version just doesn't ask the
+// same of us — each direction is negotiated on its own.
+const OPUS_PARAMS = { useinbandfec: '1', usedtx: '1' };
+
+function tuneOpus(sdp) {
+  const pt = /^a=rtpmap:(\d+) opus\/48000/m.exec(sdp)?.[1];
+  if (!pt) return sdp;
+  return sdp.replace(new RegExp(`^a=fmtp:${pt} (.*)$`, 'm'), (_, params) => {
+    const merged = new Map(params.split(';').filter((p) => p.includes('=')).map((p) => p.trim().split('=')));
+    for (const [key, value] of Object.entries(OPUS_PARAMS)) merged.set(key, value);
+    return `a=fmtp:${pt} ${[...merged].map(([key, value]) => `${key}=${value}`).join(';')}`;
+  });
+}
+
 // Connect audio (+ a data channel, for chat) to a peer we've just learned about,
 // unless we're already connected to them.
 function meshCall(id) {
   if (!peer || id === peer.id || calls.has(id)) return;
   ensureDataConnection(id);
-  const call = peer.call(id, processedStream);
+  const call = peer.call(id, processedStream, { sdpTransform: tuneOpus });
   wireCall(call, { outgoing: true });
 
   // If they're offline (or never accept), the call just hangs — give up after a while
@@ -1566,46 +1683,29 @@ function connectTo(id) {
   meshCall(id);
 }
 
-// An accepted friend can act as a discovery hub for whoever joins through their ID:
-// when one connects to us, we hand them the list of everyone already in the call
-// (our current `calls`), and they take it from there — calling each one directly.
-// Existing peers don't need to act on this; they'll just receive an incoming call
-// from the new joiner and auto-answer, same as any other call.
+// Whoever connects gets a `hello` — so e.g. an incoming call shows a readable
+// name instead of a raw ID — but activity and the like only once they've proven
+// they really are that friend (see settleIdentity). Who's in a call with us is
+// only ever handed over when we pick up a call from them (introduceToCall).
 //
-// Anyone else who connects (an incoming call or friend request, typically) still
-// gets a `hello` — so e.g. an incoming call shows a readable name instead of a raw
-// ID — but never the roster or activity: peer IDs are unguessable, but there's no
-// reason to hand a stranger who's in a call with us, or let them make us auto-dial
-// whatever list of IDs they feel like sending. And a friend gets them only once
-// they've proven they really are that friend (see settleIdentity).
-//
-// A presence probe (see probePresence) only gets the `hello`: it's torn down again
-// within a second, so it mustn't displace a real connection in dataConnections,
-// count as someone joining the call, or be handed queued DMs — the prober only
+// Older versions still check on us with short-lived presence probes. A probe only
+// gets the `hello`: it's torn down again within a second, so it mustn't displace
+// a real connection in dataConnections or be handed queued DMs — the prober only
 // reads the hello off it, so anything else sent there would just be lost.
 function handleIncomingDataConnection(conn) {
   const isProbe = conn.metadata?.probe === true;
   wireIdentityCheck(conn, conn.peer, {
     probe: isProbe,
     onTrusted: () => {
-      if (!acceptedFriends().some((f) => f.id === conn.peer)) return;
-      if (isProbe) {
-        // Can't hand queued DMs over the probe itself — open a real connection for them instead.
-        if (pendingMessages.get(conn.peer)?.length) ensureDataConnection(conn.peer);
-        return;
-      }
-      const roster = [...calls.keys()].filter((id) => id !== conn.peer);
-      conn.send({ type: 'roster', peers: roster });
-      for (const [otherId, otherConn] of dataConnections) {
-        if (otherId !== conn.peer) otherConn.send({ type: 'peer-joined', id: conn.peer });
-      }
+      // Can't hand queued DMs over the probe itself — open a real connection for them instead.
+      if (isProbe && isFriend(conn.peer) && pendingMessages.get(conn.peer)?.length) ensureDataConnection(conn.peer);
     },
   });
   conn.on('open', () => {
     conn.send(myHello(conn));
     if (!isProbe) dataConnections.set(conn.peer, conn);
   });
-  conn.on('close', () => removeDataConnection(conn.peer, conn));
+  conn.on('close', () => connectionClosed(conn.peer, conn));
 }
 
 // --- identity verification -----------------------------------------------
@@ -1659,6 +1759,7 @@ function wireIdentityCheck(conn, id, { probe = false, onTrusted = null, onFailed
   conn.on('open', () => {
     conn.identityTimer = setTimeout(() => settleIdentity(conn, id, 'failed', 'timeout'), IDENTITY_TIMEOUT_MS);
   });
+  conn.on('close', () => clearTimeout(conn.identityTimer)); // closing mid-check isn't a failed check
   conn.on('data', (msg) => {
     // Everything here comes straight off the wire from another peer, and PeerJS
     // will happily decode and deliver a bare null or string.
@@ -1809,18 +1910,19 @@ function handleDataMessage(fromId, msg) {
     // withholds it from anyone else, but don't rely solely on other clients playing
     // by that rule. A connected peer controls this list even then, so still validate
     // it and cap it, so a misbehaving/malicious one can't fan us out into countless
-    // outbound calls.
-    if (acceptedFriends().some((f) => f.id === fromId) && Array.isArray(msg.peers)) {
+    // outbound calls. And only from someone we're calling: older versions send it
+    // whenever a connection opens, which now happens just from being online.
+    if (calls.has(fromId) && acceptedFriends().some((f) => f.id === fromId) && Array.isArray(msg.peers)) {
       for (const id of msg.peers.slice(0, 50)) {
         if (typeof id === 'string') meshCall(id);
       }
     }
   } else if (msg.type === 'peer-joined') {
-    if (typeof msg.id !== 'string') return;
-    log(t('log.joining', { name: friendName(msg.id) }));
     // Only an introduction from someone we're actually in a call with counts —
     // see admitIncomingCall.
-    if (calls.has(fromId)) introducedPeers.set(msg.id, Date.now());
+    if (typeof msg.id !== 'string' || !calls.has(fromId)) return;
+    log(t('log.joining', { name: friendName(msg.id) }));
+    introducedPeers.set(msg.id, Date.now());
   } else if (msg.type === 'chat') {
     const text = typeof msg.text === 'string' ? msg.text.slice(0, 2000) : '';
     if (msg.scope === 'dm') {
@@ -2507,66 +2609,32 @@ async function confirmRemoveFriend(id) {
 
 // A silent, no-audio connection attempt just to check whether a friend's app is
 // currently open — doesn't ring anything on their end.
+// Every friend who's online gets one data connection that stays open — the same
+// one DMs, calls and activity go over — so once it's up, checking on them costs
+// nothing on the network: WebRTC keeps the connection alive by itself, and ICE
+// notices within seconds if their end goes away. A new connection is only dialed
+// to a friend we have none to: someone offline as far as we know, or whose
+// connection just closed. They count as online once it opens and they've proven
+// who they are (settleIdentity); offline when it can't be opened (see
+// ensureDataConnection and dropDeadConnectionsTo).
 function probePresence(id) {
   if (!peer || !id || calls.has(id)) return;
-  // Already have a live connection (e.g. an open DM) — that's a stronger signal than
-  // a fresh probe anyway, and opening one is pure churn: a whole extra WebRTC
-  // PeerConnection + DataChannel handshake, held open, then torn down again.
   const existing = dataConnections.get(id);
-  const iceState = existing?.peerConnection?.iceConnectionState;
-  if (existing?.open && iceState !== 'disconnected' && iceState !== 'failed') {
-    markOnline(id);
-    return;
-  }
-  // Still "open" but ICE has lost them: their app crashed or was killed without
-  // closing anything. PeerJS only closes the connection once ICE fully fails,
-  // ~30 s later — don't keep showing them online until then; drop it and probe.
-  if (existing?.open) {
+  if (existing && !existing.open) return; // still dialing — it has its own timeout
+  if (existing) {
+    const iceState = existing.peerConnection?.iceConnectionState;
+    if (iceState !== 'disconnected' && iceState !== 'failed') {
+      if (isTrusted(existing)) markOnline(id);
+      return;
+    }
+    // Still "open" but ICE has lost them: their app crashed or was killed without
+    // closing anything. PeerJS only closes the connection once ICE fully fails,
+    // ~30 s later — don't keep showing them online until then; drop it and redial.
     existing.close();
     dataConnections.delete(id);
   }
-  if (activeProbes.has(id)) return; // previous one still in flight
-  let settled = false;
-  // Tagged so the other end knows it's only a presence check (see
-  // handleIncomingDataConnection) — older clients just ignore the metadata.
-  const probe = peer.connect(id, { reliable: false, metadata: { probe: true } });
-  // Online only once they've proven who they are — anyone could answer to their ID.
-  wireIdentityCheck(probe, id, {
-    probe: true,
-    onTrusted: () => {
-      finish(true);
-      // Give our activity (sent once the check passes) a moment to arrive before
-      // tearing the probe connection back down.
-      setTimeout(() => { try { probe.close(); } catch {} }, 800);
-    },
-    onFailed: () => finish(false),
-  });
-  const finish = (online) => {
-    if (settled) return;
-    settled = true;
-    clearTimeout(timer);
-    activeProbes.delete(id);
-    if (online) {
-      markOnline(id);
-      // Anything we queued for them while they were away goes out now, over a
-      // real connection — not on whenever we next happen to open a chat with them.
-      if (pendingMessages.get(id)?.length) ensureDataConnection(id);
-    } else {
-      setPeerActivity(id, null); // stale activity shouldn't outlive them going offline
-      statusByPeer.delete(id);
-      if (presence.get(id) !== false) { presence.set(id, false); scheduleRenderPeerList(); }
-      try { probe.close(); } catch {}
-    }
-  };
-  const timer = setTimeout(() => finish(false), 4000);
-  activeProbes.set(id, () => finish(false)); // so a peer-unavailable error that beats the timeout can end it early
-  // Older clients flush queued DMs over whatever connection opens first, probes
-  // included — wireIdentityCheck hands those to handleDataMessage like any other.
-  probe.on('open', () => probe.send(myHello(probe)));
-  probe.on('error', () => finish(false));
+  ensureDataConnection(id);
 }
-
-const activeProbes = new Map(); // peerId -> ends that probe as "offline"
 
 function markOnline(id) {
   if (presence.get(id) === true) return;
@@ -2574,12 +2642,18 @@ function markOnline(id) {
   scheduleRenderPeerList();
 }
 
-// Every 10s while the window is visible. Friends already known to be online are
-// re-checked every sweep (so going offline shows up promptly); offline friends
-// and unanswered friend requests only every third — each attempt sets up a whole
-// WebRTC connection (ICE gathering, TURN allocation) just to find nobody home,
-// and a friend coming online announces themselves anyway: their own startup
-// sweep reaches us (see markOnline in handleIncomingDataConnection).
+function markOffline(id) {
+  setPeerActivity(id, null); // stale activity shouldn't outlive them going offline
+  statusByPeer.delete(id);
+  if (presence.get(id) !== false) { presence.set(id, false); scheduleRenderPeerList(); }
+}
+
+// Every 10s while the window is visible. Friends already online cost nothing to
+// check (see probePresence); offline friends and unanswered friend requests are
+// only redialed every third sweep — each attempt sets up a whole WebRTC
+// connection (ICE gathering, TURN allocation) just to find nobody home, and a
+// friend coming online announces themselves anyway: their own startup sweep
+// reaches us (see markOnline in settleIdentity).
 const PRESENCE_SWEEP_MS = 10000;
 let presenceSweepCount = 1; // the sweep on connecting already covered everyone
 function probeAllFriends({ everyone = false } = {}) {
@@ -2602,11 +2676,11 @@ document.addEventListener('visibilitychange', () => {
 // without this every DM, call or friend request aimed at an offline friend
 // would leave a dead RTCPeerConnection behind for the rest of the session.
 function dropDeadConnectionsTo(id) {
-  activeProbes.get(id)?.();
   const conn = dataConnections.get(id);
   if (conn && !conn.open) {
     conn.close();
     dataConnections.delete(id);
+    markOffline(id);
   }
 }
 
@@ -2662,8 +2736,9 @@ function renderIncomingCalls() {
       </span>`;
     div.querySelector('.acceptBtn').addEventListener('click', () => {
       pendingCalls.delete(id);
-      call.answer(processedStream);
+      call.answer(processedStream, { sdpTransform: tuneOpus });
       wireCall(call);
+      introduceToCall(id);
       renderIncomingCalls();
     });
     div.querySelector('.declineBtn').addEventListener('click', () => {
