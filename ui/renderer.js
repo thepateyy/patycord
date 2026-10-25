@@ -2016,12 +2016,22 @@ function addChatMessage(peerId, fromId, text, { ts = Date.now(), id = null } = {
   if (id && history.some((m) => m.id === id && m.fromId === fromId)) return false;
   const entry = { fromId, text, ts, ...(id && { id }) };
   history.push(entry);
-  if (history.length > CHAT_HISTORY_LIMIT) history.splice(0, history.length - CHAT_HISTORY_LIMIT);
+  trimHistory(history);
   chatHistories.set(peerId, history);
   saveChatHistories();
   if (peerId === openChatPeerId) renderChatMessage(entry, { pending: isQueued(peerId, id) });
   else if (fromId === peerId) setUnread(peerId, (unreadCounts.get(peerId) || 0) + 1);
   return true;
+}
+
+// Drops the oldest messages past the limit, releasing any file among them — a
+// received file lives in memory behind its blob URL, and nothing would ever
+// revoke it once its message is gone.
+function trimHistory(history) {
+  if (history.length <= CHAT_HISTORY_LIMIT) return;
+  for (const m of history.splice(0, history.length - CHAT_HISTORY_LIMIT)) {
+    if (m.file?.url) URL.revokeObjectURL(m.file.url);
+  }
 }
 
 // Queues a DM for `peerId` so it survives them being offline (or us restarting
@@ -2316,6 +2326,7 @@ function safeFileName(name) {
 function addFileEntry(peerId, entry) {
   const history = chatHistories.get(peerId) || [];
   history.push(entry);
+  trimHistory(history);
   chatHistories.set(peerId, history);
   if (peerId === openChatPeerId) renderChatMessage(entry);
   else if (entry.fromId === peerId) setUnread(peerId, (unreadCounts.get(peerId) || 0) + 1);

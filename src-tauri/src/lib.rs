@@ -490,7 +490,43 @@ fn show_main_window(app: &tauri::AppHandle) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+        sync_webview_visibility(&window);
     }
+}
+
+// Neither Tauri nor WebView2 tells the page when its window goes to the tray or
+// gets minimized, so it would keep compositing and holding GPU memory as if it
+// were on screen. Marking the webview invisible makes the page document.hidden
+// (rendering stops, and so does the presence sweep — see probeAllFriends), and
+// the low memory target lets WebView2 drop whatever it can rebuild. Script,
+// network and audio carry on, so calls, messages and incoming connections are
+// unaffected. Re-run after every hide/show and on every resize or focus change,
+// which is how minimizing and restoring from the taskbar show up.
+fn sync_webview_visibility(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "windows")]
+    {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+        };
+        use windows::core::Interface;
+
+        let on_screen = window.is_visible().unwrap_or(true) && !window.is_minimized().unwrap_or(false);
+        let _ = window.with_webview(move |webview| unsafe {
+            let controller = webview.controller();
+            let _ = controller.SetIsVisible(on_screen);
+            // Older WebView2 runtimes lack ICoreWebView2_19; visibility alone still helps there.
+            if let Ok(core) = controller.CoreWebView2().and_then(|core| core.cast::<ICoreWebView2_19>()) {
+                let _ = core.SetMemoryUsageTargetLevel(if on_screen {
+                    COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+                } else {
+                    COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+                });
+            }
+        });
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = window;
 }
 
 // The menu's items, kept so the frontend can relabel them in the current language.
@@ -608,11 +644,19 @@ pub fn run() {
             open_url
         ])
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if CLOSE_TO_TRAY.load(std::sync::atomic::Ordering::Relaxed) {
-                    api.prevent_close();
-                    let _ = window.hide();
+            use tauri::Manager;
+            match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    if CLOSE_TO_TRAY.load(std::sync::atomic::Ordering::Relaxed) {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
                 }
+                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Focused(_) => {}
+                _ => return,
+            }
+            if let Some(webview_window) = window.get_webview_window(window.label()) {
+                sync_webview_visibility(&webview_window);
             }
         })
         .setup(|_app| {
@@ -621,10 +665,11 @@ pub fn run() {
                 use tauri::Manager;
                 // The window starts hidden (tauri.conf.json) so a launch at sign-in
                 // never flashes it up before going to the tray.
-                if !std::env::args().any(|arg| arg == STARTED_HIDDEN_ARG) {
-                    if let Some(window) = _app.get_webview_window("main") {
+                if let Some(window) = _app.get_webview_window("main") {
+                    if !std::env::args().any(|arg| arg == STARTED_HIDDEN_ARG) {
                         let _ = window.show();
                     }
+                    sync_webview_visibility(&window);
                 }
             }
             #[cfg(target_os = "windows")]
